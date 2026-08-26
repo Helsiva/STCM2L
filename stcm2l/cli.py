@@ -6,6 +6,7 @@ Interface de linha de comando. Todos os subcomandos aceitam arquivo unico ou
 pasta (processamento em lote).
 
     python stcm2l.py info      <arquivo|pasta>
+    python stcm2l.py diag      <arquivo>            (por que deu 0 textos?)
     python stcm2l.py verify    <arquivo|pasta>
     python stcm2l.py extract   <arquivo|pasta> -o <saida>
     python stcm2l.py translate <json|pasta>    -o <saida> --provider deepl --api-key KEY
@@ -85,6 +86,22 @@ def cmd_info(args: argparse.Namespace) -> int:
             print(f"  opcodes (top) .... {top}")
         for w in nfo.warnings:
             print(f"  ! aviso: {w}")
+    return 0
+
+
+def cmd_diag(args: argparse.Namespace) -> int:
+    from .diag import diagnose
+    files = iter_inputs(Path(args.input), args.recursive, args.suffixes)
+    if not files:
+        print("nenhum arquivo encontrado.")
+        return 1
+    for path in files[:args.files]:
+        try:
+            diagnose(path, args.encoding, limit=args.limit, min_chars=args.min_chars)
+        except Stcm2lError as exc:
+            print(f"{path.name}: ERRO - {exc}")
+    if len(files) > args.files:
+        print(f"\n({len(files) - args.files} arquivos omitidos; use --files N)")
     return 0
 
 
@@ -237,6 +254,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Fluxo recomendado:\n"
             "  1. python stcm2l.py verify  .\\scripts            (o parser entende seus arquivos?)\n"
+            "  0. python stcm2l.py diag    .\\scripts\\algum.DAT   (se extract devolver 0 textos)\n"
             "  2. python stcm2l.py extract .\\scripts -o .\\txt\n"
             "  3. python stcm2l.py translate .\\txt -o .\\txt_ptbr --provider deepl --api-key KEY\n"
             "  4. (revisao manual dos .json)\n"
@@ -258,6 +276,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--encoding", help="forca a codificacao de leitura (ex.: cp932)")
     common(sp)
     sp.set_defaults(func=cmd_info)
+
+    sp = sub.add_parser("diag", help="diagnostica '0 textos': mapa, blocos e busca crua")
+    sp.add_argument("input")
+    sp.add_argument("--encoding", help="forca a codificacao de leitura (ex.: cp932)")
+    sp.add_argument("--limit", type=int, default=25, help="itens mostrados por secao")
+    sp.add_argument("--files", type=int, default=2, help="quantos arquivos analisar em lote")
+    sp.add_argument("--min-chars", type=int, default=4,
+                    help="tamanho minimo de string na varredura crua")
+    common(sp)
+    sp.set_defaults(func=cmd_diag)
 
     sp = sub.add_parser("verify", help="round-trip: le e reescreve, comparando byte a byte")
     sp.add_argument("input")

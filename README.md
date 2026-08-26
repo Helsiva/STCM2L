@@ -62,6 +62,29 @@ python stcm2l.py extract .\scripts -o .\txt
 python stcm2l.py extract .\scripts -o .\txt --format txt
 ```
 
+#### Deu "0 textos"?
+
+`verify` passar e `extract` devolver zero significa que o arquivo foi entendido,
+mas nenhum bloco de dado pareceu diálogo. O comando `diag` diz por quê:
+
+```powershell
+python stcm2l.py diag .\scripts\600_sub_NO00.DAT
+```
+
+Ele imprime três coisas:
+
+1. **todos os blocos de dado**, com o motivo exato da recusa (byte de controle,
+   codificação errada) e, quando existe, a codificação alternativa que funciona;
+2. **uma varredura crua** de strings cp932/UTF-16 no arquivo inteiro, ignorando a
+   estrutura, dizendo em que região cada string caiu (`PAYLOAD` de um bloco,
+   trecho cru, tabela de exports…);
+3. **um veredito**: o texto está lá e a heurística recusou, o texto está fora dos
+   blocos reconhecidos, ou o arquivo realmente não tem diálogo (só chamadas de
+   voz e flags — nesse caso o texto está em outro arquivo do CPK).
+
+Escapes rápidos: `--encoding cp932` (ou `utf-16-le`) força a codificação, e
+`extract --all-blocks` exporta todos os blocos, inclusive os que não parecem texto.
+
 ### 2. Traduzir
 
 **Automático (DeepL):**

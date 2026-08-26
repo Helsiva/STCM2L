@@ -27,7 +27,9 @@ from .core import DataBlock, Script
 # ---------------------------------------------------------------------------
 
 #: ordem de tentativa. cp932 == Shift-JIS estendido da Microsoft (o usado no Vita).
-CANDIDATE_ENCODINGS = ("utf-8", "cp932", "cp1252", "latin-1")
+#: utf-16-le fica por ULTIMO de proposito: ele decodifica quase qualquer coisa de
+#: tamanho par, entao so vence se decodificar ESTRITAMENTE mais blocos que os outros.
+CANDIDATE_ENCODINGS = ("utf-8", "cp932", "cp1252", "latin-1", "utf-16-le")
 
 #: caracteres de controle aceitos dentro de um texto de jogo
 _ALLOWED_CTRL = {0x09, 0x0A, 0x0D}
