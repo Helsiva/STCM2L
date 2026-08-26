@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.vscode/
+.idea/
+.DS_Store
+# artefatos de trabalho do tradutor
+/out/
+/txt/
+/txt_ptbr/
+/scripts/
+cache.json
+*.DAT
+*.BIN
