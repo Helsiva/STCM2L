@@ -104,8 +104,12 @@ python stcm2l.py translate .\txt -o .\txt_ptbr `
 
 `gtx` fala com o endpoint público `translate_a/single` usando só a biblioteca padrão —
 é o mesmo que o site do Google Tradutor usa. Não precisa de chave nem de dependência,
-mas é **não oficial**: atende um texto por vez, tem qualidade inferior à do DeepL em
-JA→PT e responde `429` se o volume for alto ou se o IP for de VPS/VPN.
+mas é **não oficial**: atende um texto por vez e tem qualidade inferior à do DeepL em
+JA→PT. Ao levar `429`, ele tenta sozinho as outras variantes de `client` do endpoint
+(`dict-chrome-ex` costuma passar onde `gtx` é barrado) e memoriza a que funcionou.
+
+O `--cache` é gravado **a cada lote**: se a tradução morrer no meio, rodar de novo com
+o mesmo arquivo de cache retoma de onde parou, sem re-traduzir o que já saiu.
 
 Outros provedores: `--provider google` (chave da Google Cloud Translation API),
 `--provider googletrans` (biblioteca não oficial — **costuma quebrar**: ela depende de

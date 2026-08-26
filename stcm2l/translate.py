@@ -36,6 +36,14 @@ GTX = "https://translate.googleapis.com/translate_a/single"
 class TranslationError(Stcm2lError):
     """Falha de comunicacao com o servico de traducao."""
 
+    #: quando True, repetir nao adianta (bloqueio, chave invalida) e a
+    #: orquestracao para na hora em vez de gastar as tentativas
+    fatal = False
+
+
+class FatalTranslationError(TranslationError):
+    fatal = True
+
 
 # ---------------------------------------------------------------------------
 # Backends
@@ -65,6 +73,13 @@ def _get(url: str, timeout: int = 30) -> str:
         raise TranslationError(f"falha de rede: {exc.reason}") from exc
 
 
+#: variantes de `client` do endpoint publico. "gtx" e a mais conhecida e tambem a
+#: mais bloqueada; "dict-chrome-ex" devolve exatamente o mesmo JSON e costuma
+#: passar onde a outra leva 429. A que funcionar fica memorizada para as demais.
+GTX_CLIENTS = ("dict-chrome-ex", "gtx", "at")
+_gtx_client: str | None = None
+
+
 def gtx_one(text: str, source: str | None, target: str) -> str:
     """
     Um texto pelo endpoint publico translate_a/single (o mesmo que o site usa).
@@ -72,17 +87,30 @@ def gtx_one(text: str, source: str | None, target: str) -> str:
     Nao precisa de chave nem da biblioteca googletrans - que quebra sozinha
     quando o Google mexe no formato de resposta.
     """
-    params = urllib.parse.urlencode({
-        "client": "gtx", "sl": source or "auto", "tl": target, "dt": "t", "q": text,
-    })
-    raw = _get(f"{GTX}?{params}")
-    try:
-        data = json.loads(raw)
-        return "".join(seg[0] for seg in data[0] if seg and seg[0])
-    except (ValueError, IndexError, TypeError) as exc:
-        raise TranslationError(
-            f"resposta inesperada do endpoint gtx: {raw[:200]}"
-        ) from exc
+    global _gtx_client
+    tentativas = (_gtx_client,) if _gtx_client else GTX_CLIENTS
+    ultimo: TranslationError | None = None
+    for client in tentativas:
+        params = urllib.parse.urlencode({
+            "client": client, "sl": source or "auto", "tl": target,
+            "dt": "t", "q": text,
+        })
+        try:
+            raw = _get(f"{GTX}?{params}")
+        except TranslationError as exc:
+            ultimo = exc
+            if "HTTP 429" in str(exc) or "HTTP 403" in str(exc):
+                continue          # cliente barrado: tenta a proxima variante
+            raise
+        _gtx_client = client
+        try:
+            data = json.loads(raw)
+            return "".join(seg[0] for seg in data[0] if seg and seg[0])
+        except (ValueError, IndexError, TypeError) as exc:
+            raise TranslationError(
+                f"resposta inesperada do endpoint gtx: {raw[:200]}"
+            ) from exc
+    raise ultimo or TranslationError("endpoint gtx indisponivel")
 
 
 def gtx_batch(texts: list[str], source: str | None, target: str = "pt",
@@ -98,11 +126,12 @@ def gtx_batch(texts: list[str], source: str | None, target: str = "pt",
                 if "HTTP 429" not in str(exc):
                     raise
                 if attempt == 3:
-                    raise TranslationError(
-                        "o endpoint gtx respondeu 429 (bloqueio por volume). Ele e "
-                        "gratuito e nao oficial: costuma barrar IP de VPS/VPN e cair "
-                        "em lotes grandes. Aumente --delay, ou use --provider deepl "
-                        "com uma chave Free (500 mil caracteres/mes, sem custo)."
+                    raise FatalTranslationError(
+                        "o endpoint gtx respondeu 429 em todas as variantes de "
+                        "cliente. Ele e gratuito e nao oficial: costuma barrar por "
+                        "volume e por IP. Aumente --delay, tente de novo mais tarde, "
+                        "ou use --provider deepl com uma chave Free (500 mil "
+                        "caracteres/mes, sem custo)."
                     ) from exc
                 time.sleep(2.0 * attempt)
         if pause and i + 1 < len(texts):
@@ -219,7 +248,8 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
                     raise TranslationError(f"provedor desconhecido: {provider}")
                 break
             except TranslationError as exc:
-                if attempt == retries:
+                if exc.fatal or attempt == retries:
+                    _salvar_cache(cache_path, cache, log)
                     raise
                 log(f"  tentativa {attempt}/{retries} falhou ({exc}); repetindo em {delay * attempt:.0f}s")
                 time.sleep(delay * attempt)
@@ -229,6 +259,9 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
             )
         for orig, translated in zip(chunk, got):
             cache[orig] = translated
+        # grava a cada lote: se a proxima chamada morrer, o que ja foi traduzido
+        # (e pago) nao se perde - basta rodar de novo com o mesmo --cache
+        _salvar_cache(cache_path, cache)
         log(f"  traduzidos {min(start + batch_size, len(todo))}/{len(todo)}")
         if delay:
             time.sleep(delay)
@@ -246,7 +279,16 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
             e.notes.append("marcadores perdidos pelo tradutor - revisar manualmente")
         done += 1
 
-    if cache_path:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+    _salvar_cache(cache_path, cache)
     return done
+
+
+def _salvar_cache(cache_path: Path | None, cache: dict[str, str],
+                  log: Callable[[str], None] | None = None) -> None:
+    if not cache_path or not cache:
+        return
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+    if log:
+        log(f"  cache gravado com {len(cache)} traducoes - rodar de novo com o mesmo "
+            "--cache retoma de onde parou")
