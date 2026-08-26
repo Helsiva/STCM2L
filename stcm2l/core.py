@@ -546,6 +546,11 @@ def _parse_body(data: bytes, start: int, end: int, warnings: list[str]) -> list[
         )
     elif code_tag < 0:
         warnings.append("marcador CODE_START_ ausente; usando varredura heuristica")
+    else:
+        warnings.append(
+            f"CODE_START_ em 0x{code_tag:X} sem um CODE_END_ depois dele; "
+            "usando varredura heuristica (as acoes podem sair erradas)"
+        )
     return _scan_mixed(data, start, end)
 
 

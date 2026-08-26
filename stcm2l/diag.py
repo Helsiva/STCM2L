@@ -169,6 +169,85 @@ def scan_utf16le(data: bytes, min_chars: int = 4) -> list[tuple[int, str, bool]]
 
 
 # ---------------------------------------------------------------------------
+# Hexdump anotado
+# ---------------------------------------------------------------------------
+
+def _cp932_row(chunk: bytes) -> str:
+    """Renderiza 16 bytes como texto cp932 (pontos onde nao for imprimivel)."""
+    try:
+        txt = chunk.decode("cp932")
+    except UnicodeDecodeError:
+        txt = chunk.decode("cp932", errors="replace")
+    out = []
+    for ch in txt:
+        cp = ord(ch)
+        out.append(ch if (0x20 <= cp <= 0x7E or cp > 0xFF) else ".")
+    return "".join(out)
+
+
+def hexdump(data: bytes, start: int, length: int) -> None:
+    """Hexdump com o valor uint32 de cada word - o que revela ponteiros/tamanhos."""
+    start = max(0, start & ~0xF)
+    end = min(len(data), start + length)
+    for off in range(start, end, 16):
+        row = data[off:off + 16]
+        hexpart = " ".join(f"{b:02X}" for b in row).ljust(47)
+        words = " ".join(f"{int.from_bytes(row[i:i+4],'little'):08X}"
+                         for i in range(0, len(row) - 3, 4))
+        print(f"  {off:06X}  {hexpart}  | {words} | {_cp932_row(row)}")
+
+
+# ---------------------------------------------------------------------------
+# Quem aponta para as strings?
+# ---------------------------------------------------------------------------
+
+def pointer_analysis(data: bytes, hits: list[tuple[int, str, bool]],
+                     regions: list[tuple[int, int, str]], limit: int = 8) -> None:
+    """
+    Procura, no arquivo inteiro, uint32 que valham o offset de cada string.
+
+    Se as strings sao alcancadas por ponteiro, da para extrair o texto seguindo
+    os ponteiros, sem depender de reconhecer a estrutura do pool.
+    """
+    index: dict[int, list[int]] = {}
+    for off in range(0, len(data) - 3, 4):
+        index.setdefault(int.from_bytes(data[off:off + 4], "little"), []).append(off)
+
+    exatos: list[tuple[int, int]] = []      # (offset da string, offset do ponteiro)
+    cabecalho: list[tuple[int, int, int]] = []   # (string, delta, ponteiro)
+    orfas = 0
+    for soff, _, _ in hits:
+        if soff in index:
+            exatos.append((soff, index[soff][0]))
+            continue
+        achou = False
+        for delta in (4, 8, 12, 16, 20, 24, 32):
+            if soff - delta in index:
+                cabecalho.append((soff, delta, index[soff - delta][0]))
+                achou = True
+                break
+        if not achou:
+            orfas += 1
+
+    total = len(hits)
+    print(f"\n-- quem aponta para as {total} strings japonesas --")
+    print(f"  ponteiro exato para o inicio ....... {len(exatos)}")
+    print(f"  ponteiro para inicio-N (cabecalho) . {len(cabecalho)}")
+    print(f"  sem nenhum ponteiro ................ {orfas}")
+    for soff, poff in exatos[:limit]:
+        print(f"  string 0x{soff:06X} <- ponteiro em 0x{poff:06X} ({where(regions, poff)})")
+    deltas: dict[int, int] = {}
+    for _, delta, _ in cabecalho:
+        deltas[delta] = deltas.get(delta, 0) + 1
+    if deltas:
+        print("  distancia string-ponteiro mais comum: " +
+              ", ".join(f"-{d}B x{n}" for d, n in sorted(deltas.items(), key=lambda x: -x[1])))
+        for soff, delta, poff in cabecalho[:limit]:
+            print(f"  string 0x{soff:06X} (inicio-{delta}) <- ponteiro em 0x{poff:06X} "
+                  f"({where(regions, poff)})")
+
+
+# ---------------------------------------------------------------------------
 # Relatorio
 # ---------------------------------------------------------------------------
 
@@ -192,6 +271,16 @@ def diagnose(path: Path, forced_encoding: str | None = None,
           f"(acoes: {sum(1 for e in script.elements if e.kind == 'action')})")
     print(f"  blocos de dado ... {len(blocks)}")
     print(f"  encoding detect .. {encoding}")
+    print(f"  export_offset .... 0x{script.header.export_offset:06X} "
+          f"({script.header.export_count} exports)")
+    print(f"  collection_link .. 0x{script.header.collection_link:06X}")
+    for tag in (b"CODE_START_", b"CODE_END_", b"GLOBAL_DATA"):
+        pos = data.find(tag)
+        marcas = []
+        while pos != -1:
+            marcas.append(f"0x{pos:06X}")
+            pos = data.find(tag, pos + 1)
+        print(f"  {tag.decode():<12} .. {', '.join(marcas) if marcas else 'AUSENTE'}")
     for w in script.warnings:
         print(f"  ! aviso: {w}")
 
@@ -250,7 +339,16 @@ def diagnose(path: Path, forced_encoding: str | None = None,
         if len(mostrar) > limit:
             print(f"  ... e mais {len(mostrar) - limit} strings")
 
-    # -- 3) veredito --------------------------------------------------------
+    # -- 3) de onde as strings sao referenciadas -----------------------------
+    jp_cp = [h for h in achados["cp932 (Shift-JIS)"] if h[2]]
+    if jp_cp:
+        pointer_analysis(data, jp_cp, regions, limit=min(limit, 8))
+        print(f"\n-- hexdump ao redor das {min(3, len(jp_cp))} primeiras strings --")
+        for soff, text, _ in jp_cp[:3]:
+            print(f"\n  ...string em 0x{soff:06X}: {_preview(text, 40)!r}")
+            hexdump(data, soff - 64, 64 + 96)
+
+    # -- 4) veredito --------------------------------------------------------
     print("\n-- veredito --")
     if aceitos:
         print(f"  {aceitos} blocos passam pela heuristica e DEVERIAM sair no extract.")
