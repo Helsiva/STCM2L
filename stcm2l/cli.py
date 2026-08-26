@@ -80,6 +80,14 @@ def cmd_info(args: argparse.Namespace) -> int:
         print(f"  collection_link .. 0x{nfo.collection_link:08X}")
         print(f"  acoes ............ {nfo.actions}   chunks crus: {nfo.raw_chunks}")
         print(f"  blocos de dado ... {nfo.data_blocks}   com texto: {nfo.text_blocks}")
+        k = nfo.kinds
+        print(f"  conteudo ......... japones {k['cjk']} | prosa latina {k['prose']} | "
+              f"identificadores {k['id']}")
+        for local, rotulo in (("acao", "dentro de acoes"), ("cru", "em trechos crus")):
+            w = nfo.where[local]
+            if sum(w.values()):
+                print(f"    {rotulo:<18} japones {w['cjk']} | prosa {w['prose']} | "
+                      f"ids {w['id']}")
         print(f"  encoding ......... {nfo.encoding}")
         if nfo.opcodes:
             top = "  ".join(f"0x{op:X}x{n}" for op, n in nfo.opcodes)
@@ -177,6 +185,7 @@ def cmd_translate(args: argparse.Namespace) -> int:
                 source=args.source, target=args.target, batch_size=args.batch_size,
                 retries=args.retries, delay=args.delay, cache_path=cache,
                 overwrite=args.overwrite, only_cjk=args.only_cjk,
+                skip_ids=args.skip_ids,
             )
         except TranslationError as exc:
             print(f"  ERRO de traducao: {exc}")
@@ -320,8 +329,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--overwrite", action="store_true",
                     help="retraduz entradas que ja possuem traducao")
     sp.add_argument("--only-cjk", action="store_true",
-                    help="traduz apenas entradas com japones; preserva IDs de voz, "
-                         "nomes de arquivo e flags do roteiro")
+                    help="traduz apenas entradas com kana/kanji (scripts em japones)")
+    sp.add_argument("--skip-ids", action="store_true",
+                    help="traduz fala em qualquer idioma, mas preserva IDs de voz, "
+                         "nomes de arquivo e flags do roteiro (scripts em ingles)")
     sp.add_argument("-r", "--recursive", action="store_true")
     sp.set_defaults(func=cmd_translate)
 

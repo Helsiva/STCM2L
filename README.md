@@ -111,11 +111,20 @@ Outros provedores: `--provider google` (chave da Google Cloud Translation API),
 `--provider googletrans` (biblioteca não oficial — **costuma quebrar**: ela depende de
 um formato de resposta que o Google muda sem aviso; prefira `gtx`), `--provider none`.
 
-> **`--only-cjk`:** o `extract` exporta todo bloco de texto do script, e isso inclui IDs
-> de voz, nomes de arquivo e flags de roteiro (`NO00_0012`, `bgm_theme_01.at9`,
-> `SYSTEM_GLOBAL`). Traduzir isso quebra o jogo. Com `--only-cjk`, só entram no tradutor
-> as entradas que contêm kana/kanji; o resto fica com `translation` vazio e o `inject`
-> preserva o original.
+> **Não mande identificador para o tradutor.** O `extract` exporta todo bloco de texto do
+> script, e isso inclui IDs de voz, nomes de arquivo e flags (`NO00_0012`,
+> `bgm_theme_01.at9`, `SYSTEM_GLOBAL`). Traduzir isso quebra o jogo, que deixa de achar o
+> recurso. Dois filtros, conforme o idioma do script:
+>
+> - `--only-cjk` — script **japonês**: traduz só o que tem kana/kanji.
+> - `--skip-ids` — script **em inglês**: traduz fala em qualquer idioma, mas preserva o que
+>   tem cara de identificador. Num script em inglês, `--only-cjk` pularia tudo.
+>
+> O que for pulado fica com `translation` vazio, e o `inject` preserva o original.
+
+Para descobrir o idioma de cada arquivo antes de traduzir, use o `info`: a linha
+`conteudo` separa japonês, prosa latina e identificadores, e mostra se o texto está
+embutido nas ações ou num pool solto.
 
 **Manual:** edite o `.json` (campo `"translation"`) ou o `.txt` (linhas iniciadas por `>`).
 

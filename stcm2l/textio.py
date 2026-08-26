@@ -160,6 +160,41 @@ def restore_tags(text: str, tags: list[str]) -> tuple[str, bool]:
 
 
 # ---------------------------------------------------------------------------
+# Fala x identificador da engine
+# ---------------------------------------------------------------------------
+
+#: kana + kanji + katakana de meia largura
+CJK_RE = re.compile(r"[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uFF66-\uFF9D]")
+
+#: nada de espaco, so caracteres de identificador/caminho
+ID_RE = re.compile(r"^[A-Za-z0-9_\-./\\]+$")
+
+#: extensoes de recurso que aparecem soltas no script
+ASSET_RE = re.compile(r"\.(at9|ogg|wav|mp3|png|dds|tga|gxt|dat|bin|txt|scr)$", re.I)
+
+
+def classify_text(text: str) -> str:
+    """
+    "cjk"   - tem kana/kanji: fala japonesa
+    "prose" - texto latino com cara de frase: fala em ingles/portugues
+    "id"    - identificador da engine (ID de voz, nome de arquivo, flag, label)
+
+    Serve para nao mandar `NO00_0012` nem `bgm_theme_01.at9` para o tradutor:
+    traduzir isso quebra o jogo, que deixa de achar o recurso.
+    """
+    if CJK_RE.search(text):
+        return "cjk"
+    core = _PH_RE.sub("", protect_tags(text)[0]).strip()
+    if not core:
+        return "id"                       # so marcadores da engine
+    if not ID_RE.match(core):
+        return "prose"                    # tem espaco ou pontuacao de frase
+    if ASSET_RE.search(core) or "_" in core or any(c.isdigit() for c in core):
+        return "id"
+    return "prose"
+
+
+# ---------------------------------------------------------------------------
 # Entrada de texto
 # ---------------------------------------------------------------------------
 

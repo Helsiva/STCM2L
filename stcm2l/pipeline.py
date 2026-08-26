@@ -22,8 +22,8 @@ from .core import (
 #: um trecho cru que comeca com um marcador conhecido e area de dados, nao codigo
 KNOWN_TAGS = (TAG_CODE_START, TAG_CODE_END, TAG_GLOBAL_DATA)
 from .textio import (
-    TextEntry, decode_block, detect_encoding, dump_entries, encode_text,
-    load_entries, looks_like_text,
+    TextEntry, classify_text, decode_block, detect_encoding, dump_entries,
+    encode_text, load_entries, looks_like_text,
 )
 
 DAT_SUFFIXES = (".dat", ".bin", ".stcm", ".scb")
@@ -65,6 +65,10 @@ class Info:
     encoding: str
     opcodes: list[tuple[int, int]]
     warnings: list[str]
+    #: quantos textos de cada tipo, e onde moram ("acao" = embutido numa acao,
+    #: "cru" = pool de strings solto, tipicamente na cauda do arquivo)
+    kinds: dict[str, int] = None  # type: ignore[assignment]
+    where: dict[str, dict[str, int]] = None  # type: ignore[assignment]
 
 
 def inspect(path: Path, forced_encoding: str | None = None) -> Info:
@@ -74,10 +78,15 @@ def inspect(path: Path, forced_encoding: str | None = None) -> Info:
     actions = sum(1 for e in script.elements if e.kind == "action")
     blocks = list(script.iter_data_blocks())
     texts = 0
-    for _, _, db in blocks:
+    kinds = {"cjk": 0, "prose": 0, "id": 0}
+    where = {"acao": dict(kinds), "cru": dict(kinds)}
+    for ei, _, db in blocks:
         txt = decode_block(db.content, encoding)
         if txt and looks_like_text(txt):
             texts += 1
+            kind = classify_text(txt)
+            kinds[kind] += 1
+            where["acao" if script.elements[ei].kind == "action" else "cru"][kind] += 1
     counter: Counter[int] = Counter(e.opcode for e in script.elements if e.kind == "action")
     return Info(
         path=path, size=len(data), magic=script.header.magic_text,
@@ -88,6 +97,7 @@ def inspect(path: Path, forced_encoding: str | None = None) -> Info:
         raw_chunks=sum(1 for e in script.elements if e.kind == "raw"),
         data_blocks=len(blocks), text_blocks=texts, encoding=encoding,
         opcodes=counter.most_common(12), warnings=list(script.warnings),
+        kinds=kinds, where=where,
     )
 
 

@@ -17,7 +17,6 @@ como #Name[2], #KW_F[], {var} e \\n nunca sao enviados ao tradutor.
 from __future__ import annotations
 
 import json
-import re
 import time
 import urllib.error
 import urllib.parse
@@ -26,16 +25,12 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .core import Stcm2lError
-from .textio import TextEntry, protect_tags, restore_tags
+from .textio import TextEntry, classify_text, protect_tags, restore_tags
 
 DEEPL_FREE = "https://api-free.deepl.com/v2/translate"
 DEEPL_PRO = "https://api.deepl.com/v2/translate"
 GOOGLE_V2 = "https://translation.googleapis.com/language/translate/v2"
 GTX = "https://translate.googleapis.com/translate_a/single"
-
-
-#: kana + kanji + katakana de meia largura
-CJK_RE = re.compile(r"[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uFF66-\uFF9D]")
 
 
 class TranslationError(Stcm2lError):
@@ -172,7 +167,7 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
                       source: str | None = None, target: str = "PT-BR",
                       batch_size: int = 40, retries: int = 3, delay: float = 1.0,
                       cache_path: Path | None = None, overwrite: bool = False,
-                      only_cjk: bool = False,
+                      only_cjk: bool = False, skip_ids: bool = False,
                       log: Callable[[str], None] = print) -> int:
     """
     Traduz in-place o campo `translation` das entradas. Retorna quantas foram
@@ -189,10 +184,12 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
         log(f"  cache carregado: {len(cache)} traducoes reaproveitaveis")
 
     pending = [e for e in entries if (overwrite or not e.translation.strip()) and e.original.strip()]
-    if only_cjk:
+    if only_cjk or skip_ids:
         antes = len(pending)
-        pending = [e for e in pending if CJK_RE.search(e.original)]
-        log(f"  --only-cjk: {antes - len(pending)} entradas sem japones preservadas "
+        aceitos = {"cjk"} if only_cjk else {"cjk", "prose"}
+        pending = [e for e in pending if classify_text(e.original) in aceitos]
+        rotulo = "--only-cjk" if only_cjk else "--skip-ids"
+        log(f"  {rotulo}: {antes - len(pending)} entradas preservadas sem traduzir "
             "(IDs de voz, nomes de arquivo, flags)")
     # deduplica por texto protegido
     prepared: dict[str, tuple[str, list[str]]] = {}
