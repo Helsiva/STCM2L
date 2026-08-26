@@ -16,7 +16,10 @@ como #Name[2], #KW_F[], {var} e \\n nunca sao enviados ao tradutor.
 
 from __future__ import annotations
 
+import http.client
 import json
+import socket
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -39,38 +42,85 @@ class TranslationError(Stcm2lError):
     #: quando True, repetir nao adianta (bloqueio, chave invalida) e a
     #: orquestracao para na hora em vez de gastar as tentativas
     fatal = False
+    #: quando True, e passageiro (timeout, queda de rede, 429, 5xx): vale repetir
+    transient = False
 
 
 class FatalTranslationError(TranslationError):
     fatal = True
 
 
-# ---------------------------------------------------------------------------
-# Backends
-# ---------------------------------------------------------------------------
+class TransientTranslationError(TranslationError):
+    transient = True
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """
+    Contexto TLS preferindo o pacote `certifi`, quando instalado.
+
+    No Windows o Python valida contra a loja de certificados do sistema, que em
+    maquina desatualizada ainda carrega raizes vencidas - e ai um servidor
+    perfeitamente valido volta como "certificate has expired".
+    """
+    try:
+        import certifi  # type: ignore
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
+
+def _erro_de_rede(exc: Exception, url: str) -> TranslationError:
+    """Traduz a excecao do urllib numa mensagem util, marcando se vale repetir."""
+    alvo = url.split("?")[0]
+    if isinstance(exc, urllib.error.HTTPError):
+        body = exc.read().decode("utf-8", "replace")[:200]
+        erro = (TransientTranslationError if exc.code in (429, 500, 502, 503, 504)
+                else TranslationError)
+        return erro(f"HTTP {exc.code} de {alvo}: {body}")
+
+    # o urllib embrulha o erro de socket/TLS dentro de URLError.reason, entao a
+    # causa real so aparece depois de desembrulhar
+    causa = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+
+    if isinstance(causa, ssl.SSLCertVerificationError) or \
+            "CERTIFICATE_VERIFY" in str(causa):
+        detalhe = getattr(causa, "verify_message", None) or (
+            causa.args[0] if getattr(causa, "args", None) else str(causa))
+        return FatalTranslationError(
+            f"o certificado TLS de {alvo} nao passou na validacao ({detalhe}). "
+            "Quase sempre e a maquina, nao o servidor: rode `pip install certifi` "
+            "(a ferramenta passa a usa-lo automaticamente) e confira a data e a "
+            "hora do Windows, que tambem derrubam a validacao quando estao erradas."
+        )
+    if isinstance(causa, (TimeoutError, socket.timeout)) or "timed out" in str(causa):
+        return TransientTranslationError(f"tempo esgotado esperando {alvo}")
+    if isinstance(exc, urllib.error.URLError):
+        return TransientTranslationError(f"falha de rede ao chamar {alvo}: {causa}")
+    return TransientTranslationError(f"falha ao chamar {alvo}: {exc}")
+
+
+#: erros que o urllib pode soltar SEM embrulhar em URLError - o timeout de
+#: leitura e o caso classico, e ele passava direto pelo retry
+_ERROS_DE_REDE = (urllib.error.URLError, TimeoutError, socket.timeout, ssl.SSLError,
+                  http.client.HTTPException, ConnectionError, OSError)
+
 
 def _post(url: str, payload: bytes, headers: dict[str, str], timeout: int = 30) -> dict:
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "replace")[:400]
-        raise TranslationError(f"HTTP {exc.code} de {url}: {body}") from exc
-    except urllib.error.URLError as exc:
-        raise TranslationError(f"falha de rede ao chamar {url}: {exc.reason}") from exc
+    except _ERROS_DE_REDE as exc:
+        raise _erro_de_rede(exc, url) from exc
 
 
-def _get(url: str, timeout: int = 30) -> str:
+def _get(url: str, timeout: int = 20) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
             return resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "replace")[:200]
-        raise TranslationError(f"HTTP {exc.code} de {url.split('?')[0]}: {body}") from exc
-    except urllib.error.URLError as exc:
-        raise TranslationError(f"falha de rede: {exc.reason}") from exc
+    except _ERROS_DE_REDE as exc:
+        raise _erro_de_rede(exc, url) from exc
 
 
 #: variantes de `client` do endpoint publico. "gtx" e a mais conhecida e tambem a
@@ -114,8 +164,15 @@ def gtx_one(text: str, source: str | None, target: str) -> str:
 
 
 def gtx_batch(texts: list[str], source: str | None, target: str = "pt",
-              pause: float = 0.15) -> list[str]:
-    """O endpoint atende um texto por vez; a pausa evita o 429."""
+              pause: float = 0.15,
+              on_done: Callable[[int, str], None] | None = None) -> list[str]:
+    """
+    O endpoint atende um texto por vez; a pausa evita o 429.
+
+    `on_done(indice, traducao)` e chamado a cada texto pronto: como cada um
+    custa uma requisicao, quem chama pode gravar o cache no caminho e nao perder
+    o lote inteiro se o 39o texto der timeout.
+    """
     out = []
     for i, text in enumerate(texts):
         for attempt in range(1, 4):
@@ -123,7 +180,9 @@ def gtx_batch(texts: list[str], source: str | None, target: str = "pt",
                 out.append(gtx_one(text, source, target))
                 break
             except TranslationError as exc:
-                if "HTTP 429" not in str(exc):
+                if not exc.transient:
+                    raise
+                if attempt == 3 and "HTTP 429" not in str(exc):
                     raise
                 if attempt == 3:
                     raise FatalTranslationError(
@@ -134,6 +193,8 @@ def gtx_batch(texts: list[str], source: str | None, target: str = "pt",
                         "caracteres/mes, sem custo)."
                     ) from exc
                 time.sleep(2.0 * attempt)
+        if on_done:
+            on_done(i, out[-1])
         if pause and i + 1 < len(texts):
             time.sleep(pause)
     return out
@@ -229,6 +290,12 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
     todo = [orig for orig in prepared if orig not in cache]
     log(f"  {len(pending)} entradas / {len(prepared)} textos unicos / {len(todo)} a traduzir")
 
+    def _registrar(original: str, traduzido: str) -> None:
+        """Guarda no cache assim que um texto fica pronto, gravando de vez em quando."""
+        cache[original] = traduzido
+        if cache_path and len(cache) % 25 == 0:
+            _salvar_cache(cache_path, cache)
+
     for start in range(0, len(todo), batch_size):
         chunk = todo[start:start + batch_size]
         payload = [prepared[o][0] for o in chunk]
@@ -241,7 +308,10 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
                 elif provider == "google":
                     got = google_batch(payload, api_key or "", source, target.lower())
                 elif provider == "gtx":
-                    got = gtx_batch(payload, source, target.split("-")[0].lower())
+                    got = gtx_batch(
+                        payload, source, target.split("-")[0].lower(),
+                        on_done=lambda i, txt: _registrar(chunk[i], txt),
+                    )
                 elif provider == "googletrans":
                     got = googletrans_batch(payload, source, target.split("-")[0].lower())
                 else:
