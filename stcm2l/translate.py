@@ -17,6 +17,7 @@ como #Name[2], #KW_F[], {var} e \\n nunca sao enviados ao tradutor.
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -30,6 +31,11 @@ from .textio import TextEntry, protect_tags, restore_tags
 DEEPL_FREE = "https://api-free.deepl.com/v2/translate"
 DEEPL_PRO = "https://api.deepl.com/v2/translate"
 GOOGLE_V2 = "https://translation.googleapis.com/language/translate/v2"
+GTX = "https://translate.googleapis.com/translate_a/single"
+
+
+#: kana + kanji + katakana de meia largura
+CJK_RE = re.compile(r"[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uFF66-\uFF9D]")
 
 
 class TranslationError(Stcm2lError):
@@ -50,6 +56,63 @@ def _post(url: str, payload: bytes, headers: dict[str, str], timeout: int = 30) 
         raise TranslationError(f"HTTP {exc.code} de {url}: {body}") from exc
     except urllib.error.URLError as exc:
         raise TranslationError(f"falha de rede ao chamar {url}: {exc.reason}") from exc
+
+
+def _get(url: str, timeout: int = 30) -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")[:200]
+        raise TranslationError(f"HTTP {exc.code} de {url.split('?')[0]}: {body}") from exc
+    except urllib.error.URLError as exc:
+        raise TranslationError(f"falha de rede: {exc.reason}") from exc
+
+
+def gtx_one(text: str, source: str | None, target: str) -> str:
+    """
+    Um texto pelo endpoint publico translate_a/single (o mesmo que o site usa).
+
+    Nao precisa de chave nem da biblioteca googletrans - que quebra sozinha
+    quando o Google mexe no formato de resposta.
+    """
+    params = urllib.parse.urlencode({
+        "client": "gtx", "sl": source or "auto", "tl": target, "dt": "t", "q": text,
+    })
+    raw = _get(f"{GTX}?{params}")
+    try:
+        data = json.loads(raw)
+        return "".join(seg[0] for seg in data[0] if seg and seg[0])
+    except (ValueError, IndexError, TypeError) as exc:
+        raise TranslationError(
+            f"resposta inesperada do endpoint gtx: {raw[:200]}"
+        ) from exc
+
+
+def gtx_batch(texts: list[str], source: str | None, target: str = "pt",
+              pause: float = 0.15) -> list[str]:
+    """O endpoint atende um texto por vez; a pausa evita o 429."""
+    out = []
+    for i, text in enumerate(texts):
+        for attempt in range(1, 4):
+            try:
+                out.append(gtx_one(text, source, target))
+                break
+            except TranslationError as exc:
+                if "HTTP 429" not in str(exc):
+                    raise
+                if attempt == 3:
+                    raise TranslationError(
+                        "o endpoint gtx respondeu 429 (bloqueio por volume). Ele e "
+                        "gratuito e nao oficial: costuma barrar IP de VPS/VPN e cair "
+                        "em lotes grandes. Aumente --delay, ou use --provider deepl "
+                        "com uma chave Free (500 mil caracteres/mes, sem custo)."
+                    ) from exc
+                time.sleep(2.0 * attempt)
+        if pause and i + 1 < len(texts):
+            time.sleep(pause)
+    return out
 
 
 def deepl_batch(texts: list[str], api_key: str, source: str | None,
@@ -87,7 +150,15 @@ def googletrans_batch(texts: list[str], source: str | None, target: str = "pt") 
             "provider 'googletrans' exige `pip install googletrans==4.0.0rc1`"
         ) from exc
     tr = Translator()
-    res = tr.translate(texts, src=source or "auto", dest=target)
+    try:
+        res = tr.translate(texts, src=source or "auto", dest=target)
+    except (TypeError, AttributeError, IndexError) as exc:
+        raise TranslationError(
+            "a biblioteca googletrans quebrou ao ler a resposta do Google "
+            f"({exc}). Ela depende de um formato nao oficial que muda sem aviso. "
+            "Use --provider gtx, que fala com o mesmo endpoint usando so a "
+            "biblioteca padrao."
+        ) from exc
     if not isinstance(res, list):
         res = [res]
     return [r.text for r in res]
@@ -101,6 +172,7 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
                       source: str | None = None, target: str = "PT-BR",
                       batch_size: int = 40, retries: int = 3, delay: float = 1.0,
                       cache_path: Path | None = None, overwrite: bool = False,
+                      only_cjk: bool = False,
                       log: Callable[[str], None] = print) -> int:
     """
     Traduz in-place o campo `translation` das entradas. Retorna quantas foram
@@ -117,6 +189,11 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
         log(f"  cache carregado: {len(cache)} traducoes reaproveitaveis")
 
     pending = [e for e in entries if (overwrite or not e.translation.strip()) and e.original.strip()]
+    if only_cjk:
+        antes = len(pending)
+        pending = [e for e in pending if CJK_RE.search(e.original)]
+        log(f"  --only-cjk: {antes - len(pending)} entradas sem japones preservadas "
+            "(IDs de voz, nomes de arquivo, flags)")
     # deduplica por texto protegido
     prepared: dict[str, tuple[str, list[str]]] = {}
     for e in pending:
@@ -137,6 +214,8 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
                     got = deepl_batch(payload, api_key or "", source, target, pro=True)
                 elif provider == "google":
                     got = google_batch(payload, api_key or "", source, target.lower())
+                elif provider == "gtx":
+                    got = gtx_batch(payload, source, target.split("-")[0].lower())
                 elif provider == "googletrans":
                     got = googletrans_batch(payload, source, target.split("-")[0].lower())
                 else:

@@ -95,8 +95,27 @@ python stcm2l.py translate .\txt -o .\txt_ptbr `
     --cache .\cache.json
 ```
 
+**Sem chave nenhuma (`gtx`):**
+
+```powershell
+python stcm2l.py translate .\txt -o .\txt_ptbr `
+    --provider gtx --source JA --target PT-BR --only-cjk --cache .\cache.json
+```
+
+`gtx` fala com o endpoint público `translate_a/single` usando só a biblioteca padrão —
+é o mesmo que o site do Google Tradutor usa. Não precisa de chave nem de dependência,
+mas é **não oficial**: atende um texto por vez, tem qualidade inferior à do DeepL em
+JA→PT e responde `429` se o volume for alto ou se o IP for de VPS/VPN.
+
 Outros provedores: `--provider google` (chave da Google Cloud Translation API),
-`--provider googletrans` (biblioteca não oficial, sem chave), `--provider none`.
+`--provider googletrans` (biblioteca não oficial — **costuma quebrar**: ela depende de
+um formato de resposta que o Google muda sem aviso; prefira `gtx`), `--provider none`.
+
+> **`--only-cjk`:** o `extract` exporta todo bloco de texto do script, e isso inclui IDs
+> de voz, nomes de arquivo e flags de roteiro (`NO00_0012`, `bgm_theme_01.at9`,
+> `SYSTEM_GLOBAL`). Traduzir isso quebra o jogo. Com `--only-cjk`, só entram no tradutor
+> as entradas que contêm kana/kanji; o resto fica com `translation` vazio e o `inject`
+> preserva o original.
 
 **Manual:** edite o `.json` (campo `"translation"`) ou o `.txt` (linhas iniciadas por `>`).
 

@@ -176,7 +176,7 @@ def cmd_translate(args: argparse.Namespace) -> int:
                 entries, provider=args.provider, api_key=args.api_key,
                 source=args.source, target=args.target, batch_size=args.batch_size,
                 retries=args.retries, delay=args.delay, cache_path=cache,
-                overwrite=args.overwrite,
+                overwrite=args.overwrite, only_cjk=args.only_cjk,
             )
         except TranslationError as exc:
             print(f"  ERRO de traducao: {exc}")
@@ -306,8 +306,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("translate", help="traduz o .json/.txt extraido para PT-BR")
     sp.add_argument("input")
     sp.add_argument("-o", "--output", required=True)
-    sp.add_argument("--provider", choices=("deepl", "deepl-pro", "google", "googletrans", "none"),
-                    default="deepl")
+    sp.add_argument("--provider",
+                    choices=("deepl", "deepl-pro", "google", "gtx", "googletrans", "none"),
+                    default="deepl",
+                    help="gtx = endpoint publico do Google, sem chave e sem dependencia")
     sp.add_argument("--api-key", help="chave da API (DeepL ou Google Cloud Translation)")
     sp.add_argument("--source", help="idioma de origem (JA, EN...). Padrao: deteccao do provedor")
     sp.add_argument("--target", default="PT-BR")
@@ -317,6 +319,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--cache", help="arquivo .json de cache de traducoes (reaproveita repeticoes)")
     sp.add_argument("--overwrite", action="store_true",
                     help="retraduz entradas que ja possuem traducao")
+    sp.add_argument("--only-cjk", action="store_true",
+                    help="traduz apenas entradas com japones; preserva IDs de voz, "
+                         "nomes de arquivo e flags do roteiro")
     sp.add_argument("-r", "--recursive", action="store_true")
     sp.set_defaults(func=cmd_translate)
 
