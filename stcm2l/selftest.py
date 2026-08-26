@@ -17,8 +17,8 @@ import tempfile
 from pathlib import Path
 
 from .core import (
-    DATA_HEADER_SIZE, EXPORT_ENTRY_SIZE, HEADER_SIZE, align4, build, parse,
-    roundtrip_check,
+    DATA_HEADER_SIZE, EXPORT_ENTRY_SIZE, EXPORT_NAME_SIZE, HEADER_SIZE, align4,
+    build, parse, roundtrip_check,
 )
 from .pipeline import collect_entries, inject_file
 from .textio import detect_encoding, dump_entries, load_entries
@@ -72,6 +72,113 @@ def make_sample(texts: list[str], encoding: str = "utf-8",
     out += b"\x00" * (export_off - len(out))
     out += b"MAIN".ljust(0x20, b"\x00") + struct.pack("<2I", offsets[0], 0)
     return bytes(out)
+
+
+def _wordcount_block(text: str, encoding: str) -> bytes:
+    """Bloco no layout (0, padded/4, 1, padded) - build 'STCM2L Apr 22 2013'."""
+    raw = text.encode(encoding) + b"\x00"
+    padded = align4(len(raw))
+    payload = raw + b"\x00" * (padded - len(raw))
+    return struct.pack("<4I", 0, padded // 4, 1, padded) + payload
+
+
+def make_otome_sample(inline: list[str], pool: list[str],
+                      encoding: str = "cp932") -> bytes:
+    """
+    Amostra no formato das VNs da Otomate: SEM CODE_END_, blocos wordcount
+    embutidos nas acoes e um pool de strings DEPOIS da tabela de exports,
+    alcancado pelo primeiro parametro de cada acao.
+    """
+    def corpo(ptrs: list[int]) -> tuple[bytes, list[int]]:
+        buf = bytearray(b"CODE_START_".ljust(16, b"\x00"))
+        offsets = []
+        for i, linha in enumerate(inline):
+            blk = _wordcount_block(linha, encoding)
+            offsets.append(HEADER_SIZE + len(buf))
+            buf += struct.pack("<4I", 0, 0x4BA + (i % 3), 1, 16 + 12 + len(blk))
+            buf += struct.pack("<3I", ptrs[i % len(ptrs)] if ptrs else 0,
+                               0x40000000, 0x40000000)
+            buf += blk
+        return bytes(buf), offsets
+
+    body, offsets = corpo([0])
+    export_off = align4(HEADER_SIZE + len(body))
+    pos = export_off + len(pool) * EXPORT_ENTRY_SIZE
+    ptrs = []
+    for t in pool:
+        ptrs.append(pos)
+        pos += len(_wordcount_block(t, encoding))
+    body, offsets = corpo(ptrs)              # 2o passe, ja com os ponteiros certos
+
+    out = bytearray(b"STCM2L Apr 22 2013 19:39:01".ljust(0x20, b"\x00"))
+    out += struct.pack("<4I", export_off, len(pool), 1, 0)
+    out += body
+    out += b"\x00" * (export_off - len(out))
+    for i, _ in enumerate(pool):
+        out += (b"EXP%d" % i).ljust(EXPORT_NAME_SIZE, b"\x00")
+        out += struct.pack("<2I", offsets[i % len(offsets)], 0)
+    for t in pool:
+        out += _wordcount_block(t, encoding)
+    return bytes(out)
+
+
+def _check_otome(tmpdir: Path, log) -> bool:
+    """Cobre o formato Otomate de ponta a ponta: extrair, injetar maior, ponteiros."""
+    inline = ["はあ……。", "なんでこんなことになったんだろう。", "#Name[2]", "転校!?"]
+    pool = ["（お父さんの仕事の都合で）", "（ヴァンパイアって……夢でも）"]
+    dat = tmpdir / "otome.DAT"
+    dat.write_bytes(make_otome_sample(inline, pool))
+    ok = True
+
+    same, detail = roundtrip_check(dat.read_bytes())
+    log(f"[11] otome: round-trip byte-a-byte: {'OK' if same else 'FALHOU'} ({detail})")
+    ok &= same
+
+    script = parse(dat.read_bytes())
+    entries = collect_entries(script, "cp932")
+    got = [e.original for e in entries]
+    text_ok = got == inline + pool
+    log(f"[12] otome: {len(entries)} textos extraidos "
+        f"({'OK' if text_ok else 'FALHOU'}) - inclui o pool da cauda")
+    if not text_ok:
+        log(f"     esperado={inline + pool}\n     obtido  ={got}")
+    ok &= text_ok
+
+    for i, e in enumerate(entries):
+        e.translation = f"Linha {i} traduzida com um tamanho bem maior que o original."
+    texts_file = tmpdir / "otome.json"
+    dump_entries(entries, texts_file, dat.name, "utf-8", "json")
+    out_dat = tmpdir / "out" / "otome.DAT"
+    report = inject_file(dat, texts_file, out_dat, out_encoding="utf-8")
+    inj_ok = report.applied == len(entries) and not any(
+        p.startswith("ERRO") for p in report.problems)
+    log(f"[13] otome: injecao: {report.applied} aplicados, "
+        f"{report.grown} maiores ({'OK' if inj_ok else 'FALHOU'})")
+    ok &= inj_ok
+
+    new = parse(out_dat.read_bytes())
+    got = [e.original for e in collect_entries(new, "utf-8")]
+    want = [e.translation for e in entries]
+    text_ok = got == want
+    log(f"[14] otome: textos apos injecao: {'OK' if text_ok else 'FALHOU'}")
+    ok &= text_ok
+
+    # os ponteiros para o pool da cauda tem que seguir o pool que se moveu
+    destinos = {}
+    for ei, si, db in new.iter_data_blocks():
+        el = new.elements[ei]
+        destinos[el.offset + el.segment_rel(si)] = db.content.decode("utf-8")
+    esperado = [e.translation for e in entries[len(inline):]]
+    apontados = []
+    for el in new.elements:
+        if el.kind == "action" and el.params and el.params[0][0]:
+            apontados.append(destinos.get(el.params[0][0]))
+    ptr_ok = bool(apontados) and all(a in esperado for a in apontados)
+    log(f"[15] otome: ponteiros para o pool da cauda: {'OK' if ptr_ok else 'FALHOU'}")
+    if not ptr_ok:
+        log(f"     apontados={apontados}\n     esperado={esperado}")
+    ok &= ptr_ok
+    return bool(ok)
 
 
 def run(verbose: bool = True) -> bool:
@@ -198,6 +305,10 @@ def run(verbose: bool = True) -> bool:
         log(f"[10] protecao/restauracao de marcadores: {'OK' if prot_ok else 'FALHOU'} "
             f"({len(tags)} marcadores)")
         ok &= prot_ok
+
+        # 9) formato Otomate (sem CODE_END_, bloco wordcount, pool na cauda)
+        log("\n=== amostra otomate (cp932, sem CODE_END_) ===")
+        ok &= _check_otome(tmpdir, log)
 
     log("\n" + ("TODOS OS TESTES PASSARAM" if ok else "HOUVE FALHAS - veja acima"))
     return bool(ok)

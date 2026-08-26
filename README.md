@@ -165,11 +165,21 @@ nada é silenciosamente descartado.
 +0x2C  uint32      desconhecido/padding
 +0x30  ...         CODE_START_ | ações | CODE_END_ | GLOBAL_DATA | dados globais
  ...              tabela de exports (export_count * 0x28: char[0x20] nome + 2 uint32)
- ...              cauda preservada byte a byte
+ ...              cauda: **também parseada** (vários títulos guardam ali um pool de strings)
 ```
 
 **Ação:** `uint32 global_call, opcode, nparams, length` + `nparams * (3 * uint32)` + conteúdo extra.
-**Bloco de dado:** `uint32 f0, f1, padded_len, raw_len` + `payload[padded_len]` (padding sempre `0x00`).
+
+**Bloco de dado — duas variantes**, detectadas por arquivo e reescritas na mesma forma:
+
+| variante | cabeçalho | onde aparece |
+|---|---|---|
+| `classic` | `uint32 0, 1, padded_len, raw_len` | layout documentado; o tamanho útil é gravado |
+| `wordcount` | `uint32 0, padded_len/4, 1, padded_len` | builds `STCM2L Apr 22 2013` (Otomate/Rejet). O tamanho útil **não** é gravado: a string é sempre terminada em `NUL` e o resto é padding zerado |
+
+Nem todo arquivo tem `CODE_END_`. Quando falta, o código continua sendo uma corrida
+de ações válidas: a ferramenta lê a corrida até ela acabar e trata o resto como área
+de dados — em vez de inventar ações dentro do texto, como faria a varredura heurística.
 
 ### Como os ponteiros são recalculados
 
@@ -188,8 +198,12 @@ endereço e passam intactos.
 - `--no-fix-len`: desliga a correção de parâmetros que repetem o tamanho da string.
 
 O código é delimitado pelos marcadores `CODE_START_` / `CODE_END_`; a área de dados
-globais nunca é interpretada como código. Arquivos sem esses marcadores caem numa
+globais nunca é interpretada como código. Arquivos sem `CODE_START_` caem numa
 varredura heurística com filtro anti-falso-positivo e um aviso no `info`.
+
+A cauda (depois da tabela de exports) entra no mesmo mapa de endereços. É por isso
+que um pool de strings guardado lá pode crescer: a tabela de exports é reposicionada
+e os parâmetros que apontavam para o pool acompanham.
 
 ---
 

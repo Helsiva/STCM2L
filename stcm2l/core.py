@@ -14,7 +14,7 @@ Layout implementado
     +0x2C  uint32      unknown/padding
     +0x30  ...         corpo: CODE_START_ / acoes / CODE_END_ / GLOBAL_DATA / dados
     ...              tabela de exports (export_count * 0x28)
-    ...              cauda (tail) preservada byte a byte
+    ...              cauda: parseada como elementos (pool de strings de alguns titulos)
 
 Acao (opcode):
 
@@ -159,12 +159,24 @@ class RawSegment:
 
 @dataclass
 class DataBlock:
-    """Bloco de dado STCM2L. Pode conter texto (o alvo da traducao)."""
+    """
+    Bloco de dado STCM2L. Pode conter texto (o alvo da traducao).
+
+    Ha duas variantes de cabecalho no mundo real, e a `layout` diz qual usar na
+    hora de reescrever (round-trip byte a byte):
+
+    "classic"    (0, 1, padded_len, raw_len)   - o tamanho util e gravado
+    "wordcount"  (0, padded_len/4, 1, padded_len)
+                 usado, entre outros, pelas builds "STCM2L Apr 22 2013" da
+                 Otomate. Aqui o tamanho util NAO e gravado: a string e sempre
+                 terminada em NUL e o resto do bloco e padding zerado.
+    """
     f0: int
     f1: int
     raw_len: int
     payload: bytes            # ja inclui o padding
     pad_style: str = "min"    # "min" = pad minimo | "always" = sempre >= 1 byte
+    layout: str = "classic"   # "classic" | "wordcount"
 
     # -- leitura ------------------------------------------------------------
     @property
@@ -192,6 +204,12 @@ class DataBlock:
         if self.nul_terminated:
             blob = blob.rstrip(b"\x00") + b"\x00"
         self.raw_len = len(blob)
+        if self.layout == "wordcount":
+            # o tamanho gravado e sempre multiplo de 4 e a string precisa caber
+            # com o NUL dentro dele
+            padded = align4(len(blob))
+            self.payload = blob + b"\x00" * (padded - len(blob))
+            return
         if self.pad_style == "always":
             padded = (len(blob) // 4 + 1) * 4
         else:
@@ -202,6 +220,10 @@ class DataBlock:
         return DATA_HEADER_SIZE + len(self.payload)
 
     def serialize(self) -> bytes:
+        if self.layout == "wordcount":
+            return struct.pack(
+                "<4I", self.f0, len(self.payload) // 4, self.f1, len(self.payload)
+            ) + self.payload
         return struct.pack(
             "<4I", self.f0, self.f1, len(self.payload), self.raw_len
         ) + self.payload
@@ -227,6 +249,7 @@ class Element:
     segments: list[Any] = field(default_factory=list)
     new_offset: int = -1                           # preenchido pelo builder
     orig_size: int = -1                            # tamanho lido do disco (nao muda)
+    region: str = "body"                           # "body" (antes da tabela de exports) | "tail"
 
     # -- geometria ----------------------------------------------------------
     def header_size(self) -> int:
@@ -328,8 +351,8 @@ class Script:
 # Parser
 # ---------------------------------------------------------------------------
 
-def _try_parse_data_block(buf: bytes, pos: int) -> Optional[DataBlock]:
-    """Tenta ler um bloco de dado em `pos`. Retorna None se nao validar."""
+def _try_parse_classic_block(buf: bytes, pos: int) -> Optional[DataBlock]:
+    """Variante classica (0, 1, padded_len, raw_len). None se nao validar."""
     if pos + DATA_HEADER_SIZE > len(buf):
         return None
     f0, f1, padded_len, raw_len = struct.unpack_from("<4I", buf, pos)
@@ -348,6 +371,43 @@ def _try_parse_data_block(buf: bytes, pos: int) -> Optional[DataBlock]:
     pad = padded_len - raw_len
     pad_style = "always" if (raw_len % 4 == 0 and pad == 4) else "min"
     return DataBlock(f0, f1, raw_len, payload, pad_style)
+
+
+def _try_parse_data_block(buf: bytes, pos: int) -> Optional[DataBlock]:
+    """Tenta as duas variantes de cabecalho. As regras nao se sobrepoem."""
+    db = _try_parse_classic_block(buf, pos)
+    if db is not None:
+        return db
+    return _try_parse_wordcount_block(buf, pos)
+
+
+def _try_parse_wordcount_block(buf: bytes, pos: int) -> Optional[DataBlock]:
+    """
+    Variante (0, padded_len/4, 1, padded_len) + payload.
+
+    Sem campo de tamanho util, so aceitamos o bloco quando o payload e mesmo uma
+    string terminada em NUL com padding zerado - senao qualquer sequencia de
+    words viraria bloco.
+    """
+    if pos + DATA_HEADER_SIZE > len(buf):
+        return None
+    f0, nwords, one, padded_len = struct.unpack_from("<4I", buf, pos)
+    if f0 != 0 or one != 1:
+        return None
+    if padded_len == 0 or padded_len % 4 or padded_len > MAX_DATA_LEN:
+        return None
+    if nwords * 4 != padded_len:
+        return None
+    end = pos + DATA_HEADER_SIZE + padded_len
+    if end > len(buf):
+        return None
+    payload = buf[pos + DATA_HEADER_SIZE:end]
+    if payload[-1] != 0:
+        return None
+    raw_len = payload.index(0) + 1
+    if any(payload[raw_len:]):
+        return None
+    return DataBlock(f0, one, raw_len, payload, "min", layout="wordcount")
 
 
 def _parse_segments(buf: bytes) -> list[Any]:
@@ -449,15 +509,26 @@ def _raw_elements(data: bytes, start: int, end: int) -> list[Element]:
 
 def _parse_action_run(data: bytes, start: int, end: int) -> Optional[list[Element]]:
     """Le acoes consecutivas que preenchem exatamente [start, end). None se falhar."""
+    elements, pos = _parse_actions_until(data, start, end)
+    return elements if pos == end else None
+
+
+def _parse_actions_until(data: bytes, start: int, end: int) -> tuple[list[Element], int]:
+    """
+    Le a maior corrida possivel de acoes a partir de `start`.
+
+    Retorna (acoes, offset onde a corrida parou). Serve para arquivos sem
+    CODE_END_: o codigo e uma corrida valida e o que vier depois e area de dados.
+    """
     elements: list[Element] = []
     pos = start
     while pos < end:
         el = _try_parse_action(data, pos, end)
         if el is None:
-            return None
+            break
         elements.append(el)
         pos += el.size()
-    return elements if pos == end else None
+    return elements, pos
 
 
 def _first_action_offset(data: bytes, tag_pos: int, limit: int) -> int:
@@ -544,13 +615,28 @@ def _parse_body(data: bytes, start: int, end: int, warnings: list[str]) -> list[
             f"a faixa de codigo 0x{code_begin:X}-0x{end_tag:X} nao e composta apenas "
             "por acoes validas; usando varredura heuristica"
         )
-    elif code_tag < 0:
+        return _scan_mixed(data, start, end)
+    if code_tag < 0:
         warnings.append("marcador CODE_START_ ausente; usando varredura heuristica")
-    else:
-        warnings.append(
-            f"CODE_START_ em 0x{code_tag:X} sem um CODE_END_ depois dele; "
-            "usando varredura heuristica (as acoes podem sair erradas)"
-        )
+        return _scan_mixed(data, start, end)
+
+    # CODE_START_ existe mas nao ha CODE_END_ (builds "STCM2L Apr 22 2013" e
+    # afins). O codigo continua sendo uma corrida de acoes: le ate ela acabar e
+    # trata o resto como area de dados, em vez de inventar acoes dentro do texto.
+    code_begin = _first_action_offset(data, code_tag, end)
+    run, stop = _parse_actions_until(data, code_begin, end)
+    if run:
+        if stop < end:
+            warnings.append(
+                f"sem CODE_END_: a corrida de acoes vai de 0x{code_begin:X} a "
+                f"0x{stop:X}; 0x{stop:X}-0x{end:X} tratado como area de dados"
+            )
+        return (_raw_elements(data, start, code_begin) + run
+                + _raw_elements(data, stop, end))
+    warnings.append(
+        f"sem CODE_END_ e nenhuma acao valida em 0x{code_begin:X}; "
+        "usando varredura heuristica"
+    )
     return _scan_mixed(data, start, end)
 
 
@@ -589,7 +675,13 @@ def parse(data: bytes) -> Script:
             e_off, e_extra = struct.unpack_from("<2I", data, off + EXPORT_NAME_SIZE)
             exports.append(Export(name, e_off, e_extra))
             off += EXPORT_ENTRY_SIZE
-        tail = data[off:]
+        # A cauda nao e enfeite: varios titulos guardam ali o pool de strings
+        # apontado pelos parametros das acoes. Parseada como elementos, ela
+        # entra no mapa de enderecos e pode crescer sem quebrar ponteiro.
+        tail_elements = _raw_elements(data, off, len(data))
+        for el in tail_elements:
+            el.region = "tail"
+        elements.extend(tail_elements)
 
     script = Script(header=header, elements=elements, exports=exports,
                     tail=tail, source_size=len(data), warnings=warnings)
@@ -656,12 +748,18 @@ def build(script: Script, relocate: str = "scan") -> bytes:
         raise BuildError(f"modo de relocacao desconhecido: {relocate}")
 
     # 1) novo layout ---------------------------------------------------------
+    body = [el for el in script.elements if el.region == "body"]
+    tail_els = [el for el in script.elements if el.region == "tail"]
     cursor = HEADER_SIZE
-    for el in script.elements:
+    for el in body:
         el.new_offset = cursor
         cursor += el.size()
     body_end = align4(cursor)
     pad_body = body_end - cursor
+    cursor = body_end + len(script.exports) * EXPORT_ENTRY_SIZE
+    for el in tail_els:
+        el.new_offset = cursor
+        cursor += el.size()
 
     # 2) serializa elementos -------------------------------------------------
     blobs = [bytearray(el.serialize()) for el in script.elements]
@@ -720,11 +818,15 @@ def build(script: Script, relocate: str = "scan") -> bytes:
         unknown=script.header.unknown,
     )
     out += header.pack()
-    for blob in blobs:
-        out += blob
+    for el, blob in zip(script.elements, blobs):
+        if el.region == "body":
+            out += blob
     out += b"\x00" * pad_body
     for ex in script.exports:
         out += ex.serialize()
+    for el, blob in zip(script.elements, blobs):
+        if el.region == "tail":
+            out += blob
     out += script.tail
 
     if len(out) < HEADER_SIZE:
