@@ -342,7 +342,30 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _fix_console() -> None:
+    """
+    Windows: ao REDIRECIONAR a saida (`> diag.txt`) o Python usa a codificacao
+    do locale (cp1252 no Brasil), que nao tem japones - e o programa morre com
+    UnicodeEncodeError no meio do relatorio. No console isso nao acontece porque
+    o Python escreve via WriteConsoleW. Entao: quando a saida NAO e um terminal,
+    forcamos utf-8; e em qualquer caso trocamos o caractere impossivel em vez
+    de abortar.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            if stream.isatty():
+                reconfigure(errors="replace")
+            else:
+                reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _fix_console()
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
