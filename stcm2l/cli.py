@@ -40,9 +40,23 @@ def _looks_like_dir(path: Path, forced: bool) -> bool:
     return forced or path.is_dir() or path.suffix == ""
 
 
-def _out_for(src: Path, out: Path, suffix: str, batch: bool) -> Path:
-    """Resolve o caminho de saida para um arquivo de entrada."""
+def _out_for(src: Path, out: Path, suffix: str, batch: bool,
+             root: Path | None = None) -> Path:
+    """
+    Resolve o caminho de saida para um arquivo de entrada.
+
+    Com `root` (a pasta que o usuario passou), a saida ESPELHA a estrutura de
+    subpastas da entrada. Sem isso o -r achatava tudo numa pasta so, e devolver
+    os arquivos para dentro do container virava trabalho manual - o caminho mais
+    curto para gravar um arquivo por cima do lugar errado.
+    """
     if batch or _looks_like_dir(out, False):
+        if root is not None:
+            try:
+                rel = src.relative_to(root).parent
+            except ValueError:
+                rel = Path()
+            return out / rel / (src.stem + suffix)
         return out / (src.stem + suffix)
     return out
 
@@ -55,6 +69,11 @@ def _pair_texts(dat: Path, texts_root: Path) -> Path | None:
         cand = texts_root / (dat.stem + suffix)
         if cand.exists():
             return cand
+    # arvore espelhada: o texto pode estar numa subpasta, como o .DAT esta
+    for suffix in TEXT_SUFFIXES:
+        achado = next(texts_root.rglob(dat.stem + suffix), None)
+        if achado is not None:
+            return achado
     return None
 
 
@@ -150,7 +169,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
     total = 0
     fails = 0
     for path in files:
-        target = _out_for(path, out, suffix, batch)
+        target = _out_for(path, out, suffix, batch, src if batch else None)
         try:
             n = extract_file(path, target, fmt=args.format,
                              forced_encoding=args.encoding, all_blocks=args.all_blocks)
@@ -191,7 +210,7 @@ def cmd_translate(args: argparse.Namespace) -> int:
             print(f"  ERRO de traducao: {exc}")
             return 2
         done += n
-        target = _out_for(path, out, path.suffix, batch)
+        target = _out_for(path, out, path.suffix, batch, src if batch else None)
         fmt = "json" if target.suffix.lower() == ".json" else "txt"
         dump_entries(entries, target, meta.get("source", path.stem),
                      meta.get("encoding", "utf-8"), fmt)
@@ -219,7 +238,8 @@ def cmd_inject(args: argparse.Namespace) -> int:
         if pair is None:
             print(f"[PULA] {path.name}: sem .json/.txt correspondente em {texts}")
             continue
-        target = _out_for(path, out, path.suffix, batch)
+        target = _out_for(path, out, path.suffix, batch, src if batch else None)
+        target.parent.mkdir(parents=True, exist_ok=True)
         if target.resolve() == path.resolve():
             print(f"[ERRO] {path.name}: a saida sobrescreveria o original. Use outra pasta.")
             fails += 1

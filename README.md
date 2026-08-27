@@ -85,6 +85,11 @@ Ele imprime três coisas:
 Escapes rápidos: `--encoding cp932` (ou `utf-16-le`) força a codificação, e
 `extract --all-blocks` exporta todos os blocos, inclusive os que não parecem texto.
 
+Com `-r` numa pasta, a saída **espelha a estrutura de subpastas** da entrada.
+Isso importa na hora de devolver os arquivos para dentro do container: a árvore
+gerada pode ser copiada inteira por cima da extraída, sem redistribuir arquivo a
+mão. Caminho com espaço precisa de aspas (`"...\game pt\script"`).
+
 ### 2. Traduzir
 
 **Sem chave nenhuma (`gtx`, o padrão):**
