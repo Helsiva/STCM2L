@@ -82,19 +82,40 @@ def detect_encoding(script: Script, forced: str | None = None) -> str:
     return best
 
 
+#: Pontuacao que o NFKD NAO decompoe e que nao existe em cp932/ascii.
+#: Sem esta tabela cada uma vira '?' - e tradutor automatico usa travessao a
+#: rodo em dialogo, entao o roteiro inteiro sairia salpicado de '?'.
+_PONTUACAO_LATINA = {
+    "\u2014": "-",    # — travessao
+    "\u2013": "-",    # – meia-risca
+    "\u2012": "-",    # ‒ risca numerica
+    "\u2212": "-",    # − menos matematico
+    "\u00ab": '"',    # « aspas angulares
+    "\u00bb": '"',    # »
+    "\u2039": "'",    # ‹
+    "\u203a": "'",    # ›
+    "\u2022": "*",    # • marcador
+    "\u00a0": " ",    # espaco nao separavel
+    "\u20ac": "EUR",  # €
+}
+_TABELA_PONTUACAO = str.maketrans(_PONTUACAO_LATINA)
+
+
 def encode_text(text: str, encoding: str, fallback: str = "strict") -> bytes:
     """
     Codifica o texto traduzido.
 
     fallback="strict"   : erro se algum caractere nao couber (recomendado, avisa cedo)
-    fallback="ascii"    : remove acentos (ç->c, á->a) antes de codificar
+    fallback="ascii"    : remove acentos (ç->c, á->a) e dobra a pontuacao
+                          tipografica (— -> -, « -> ") antes de codificar
     fallback="replace"  : substitui o impossivel por '?'
     """
     try:
         return text.encode(encoding)
     except UnicodeEncodeError:
         if fallback == "ascii":
-            folded = unicodedata.normalize("NFKD", text)
+            folded = text.translate(_TABELA_PONTUACAO)
+            folded = unicodedata.normalize("NFKD", folded)
             folded = "".join(c for c in folded if not unicodedata.combining(c))
             return folded.encode(encoding, errors="replace")
         if fallback == "replace":

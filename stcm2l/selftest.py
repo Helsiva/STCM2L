@@ -131,14 +131,14 @@ def _check_otome(tmpdir: Path, log) -> bool:
     ok = True
 
     same, detail = roundtrip_check(dat.read_bytes())
-    log(f"[12] otome: round-trip byte-a-byte: {'OK' if same else 'FALHOU'} ({detail})")
+    log(f"[13] otome: round-trip byte-a-byte: {'OK' if same else 'FALHOU'} ({detail})")
     ok &= same
 
     script = parse(dat.read_bytes())
     entries = collect_entries(script, "cp932")
     got = [e.original for e in entries]
     text_ok = got == inline + pool
-    log(f"[13] otome: {len(entries)} textos extraidos "
+    log(f"[14] otome: {len(entries)} textos extraidos "
         f"({'OK' if text_ok else 'FALHOU'}) - inclui o pool da cauda")
     if not text_ok:
         log(f"     esperado={inline + pool}\n     obtido  ={got}")
@@ -152,7 +152,7 @@ def _check_otome(tmpdir: Path, log) -> bool:
     report = inject_file(dat, texts_file, out_dat, out_encoding="utf-8")
     inj_ok = report.applied == len(entries) and not any(
         p.startswith("ERRO") for p in report.problems)
-    log(f"[14] otome: injecao: {report.applied} aplicados, "
+    log(f"[15] otome: injecao: {report.applied} aplicados, "
         f"{report.grown} maiores ({'OK' if inj_ok else 'FALHOU'})")
     ok &= inj_ok
 
@@ -160,7 +160,7 @@ def _check_otome(tmpdir: Path, log) -> bool:
     got = [e.original for e in collect_entries(new, "utf-8")]
     want = [e.translation for e in entries]
     text_ok = got == want
-    log(f"[15] otome: textos apos injecao: {'OK' if text_ok else 'FALHOU'}")
+    log(f"[16] otome: textos apos injecao: {'OK' if text_ok else 'FALHOU'}")
     ok &= text_ok
 
     # os ponteiros para o pool da cauda tem que seguir o pool que se moveu
@@ -174,7 +174,7 @@ def _check_otome(tmpdir: Path, log) -> bool:
         if el.kind == "action" and el.params and el.params[0][0]:
             apontados.append(destinos.get(el.params[0][0]))
     ptr_ok = bool(apontados) and all(a in esperado for a in apontados)
-    log(f"[16] otome: ponteiros para o pool da cauda: {'OK' if ptr_ok else 'FALHOU'}")
+    log(f"[17] otome: ponteiros para o pool da cauda: {'OK' if ptr_ok else 'FALHOU'}")
     if not ptr_ok:
         log(f"     apontados={apontados}\n     esperado={esperado}")
     ok &= ptr_ok
@@ -328,6 +328,17 @@ def run(verbose: bool = True) -> bool:
             log(f"     plana={plana} pares={pares} "
                 f"desalinhado={desalinhado} lixo={lixo}")
         ok &= gtx_ok
+
+        # 11) dobra para cp932: acento E pontuacao tipografica, sem sobrar '?'
+        from .textio import encode_text
+        frase = "Nao sei\u2026 \u2014 \u201cVoc\u00ea est\u00e1 bem?\u201d \u2014 disse \u00e0 beira."
+        dobrada = encode_text(frase, "cp932", fallback="ascii").decode("cp932")
+        cp932_ok = "?" not in dobrada.replace("bem?", "") and " - " in dobrada
+        log(f"[12] dobra para cp932 (acento + travessao, sem virar '?'): "
+            f"{'OK' if cp932_ok else 'FALHOU'}")
+        if not cp932_ok:
+            log(f"     {dobrada!r}")
+        ok &= cp932_ok
 
         # 9) formato Otomate (sem CODE_END_, bloco wordcount, pool na cauda)
         log("\n=== amostra otomate (cp932, sem CODE_END_) ===")

@@ -175,7 +175,7 @@ Por isso:
 | Situação | O que fazer |
 |---|---|
 | O jogo lê UTF-8 | `--out-encoding utf-8` (o padrão dos scripts já em UTF-8) |
-| O jogo lê só cp932 | `--fallback ascii` → grava `tradução` como `traducao` |
+| O jogo lê só cp932 | `--fallback ascii` → grava `tradução` como `traducao`, e dobra a pontuação tipográfica (`—` → `-`, `«»` → `"`, `…` → `...`) que senão viraria `?` |
 | Você editou a fonte/tabela do jogo | `--out-encoding <sua codificação>` |
 
 Sem `--fallback`, a ferramenta **aborta com erro** em vez de gravar lixo — é proposital:
