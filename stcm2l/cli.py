@@ -9,7 +9,7 @@ pasta (processamento em lote).
     python stcm2l.py diag      <arquivo>            (por que deu 0 textos?)
     python stcm2l.py verify    <arquivo|pasta>
     python stcm2l.py extract   <arquivo|pasta> -o <saida>
-    python stcm2l.py translate <json|pasta>    -o <saida> --provider deepl --api-key KEY
+    python stcm2l.py translate <json|pasta>    -o <saida> --source JA   (gratis, sem chave)
     python stcm2l.py inject    <arquivo|pasta> --texts <json|pasta> -o <saida>
     python stcm2l.py selftest
 """
@@ -265,7 +265,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  1. python stcm2l.py verify  .\\scripts            (o parser entende seus arquivos?)\n"
             "  0. python stcm2l.py diag    .\\scripts\\algum.DAT   (se extract devolver 0 textos)\n"
             "  2. python stcm2l.py extract .\\scripts -o .\\txt\n"
-            "  3. python stcm2l.py translate .\\txt -o .\\txt_ptbr --provider deepl --api-key KEY\n"
+            "  3. python stcm2l.py translate .\\txt -o .\\txt_ptbr --source JA --cache cache.json\n"
             "  4. (revisao manual dos .json)\n"
             "  5. python stcm2l.py inject  .\\scripts --texts .\\txt_ptbr -o .\\out\n"
         ),
@@ -316,13 +316,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("input")
     sp.add_argument("-o", "--output", required=True)
     sp.add_argument("--provider",
-                    choices=("deepl", "deepl-pro", "google", "gtx", "googletrans", "none"),
-                    default="deepl",
-                    help="gtx = endpoint publico do Google, sem chave e sem dependencia")
+                    choices=("gtx", "gtx-serial", "deepl", "deepl-pro", "google",
+                             "googletrans", "none"),
+                    default="gtx",
+                    help="gtx (padrao) = endpoint publico do Google EM LOTE, sem chave "
+                         "e sem dependencia; gtx-serial = o mesmo uma fala por "
+                         "requisicao, so como plano B se o lote for barrado")
     sp.add_argument("--api-key", help="chave da API (DeepL ou Google Cloud Translation)")
     sp.add_argument("--source", help="idioma de origem (JA, EN...). Padrao: deteccao do provedor")
     sp.add_argument("--target", default="PT-BR")
-    sp.add_argument("--batch-size", type=int, default=40)
+    sp.add_argument("--batch-size", type=int, default=None,
+                    help="textos por requisicao (padrao: 500 no gtx, 40 nos demais)")
     sp.add_argument("--retries", type=int, default=3)
     sp.add_argument("--delay", type=float, default=1.0, help="pausa entre lotes, em segundos")
     sp.add_argument("--cache", help="arquivo .json de cache de traducoes (reaproveita repeticoes)")

@@ -87,7 +87,30 @@ Escapes rápidos: `--encoding cp932` (ou `utf-16-le`) força a codificação, e
 
 ### 2. Traduzir
 
-**Automático (DeepL):**
+**Sem chave nenhuma (`gtx`, o padrão):**
+
+```powershell
+python stcm2l.py translate .\txt -o .\txt_ptbr `
+    --source JA --target PT-BR --only-cjk --cache .\cache.json
+```
+
+`gtx` fala com o endpoint público `translate_a/t` usando só a biblioteca padrão — é o
+mesmo motor do site do Google Tradutor. Não precisa de chave nem de dependência, e vai
+**em lote**: manda até 500 falas por requisição (`--batch-size`), então um script
+inteiro sai em segundos em vez de minutos. Medido: 124 falas em **2,8 s** contra 36 s
+uma-a-uma; 2000 falas cabem numa única requisição, em ~5 s.
+
+É um endpoint **não oficial**, então tem duas defesas: ao levar `429` ele tenta
+sozinho as outras variantes de `client` (`dict-chrome-ex` costuma passar onde `gtx` é
+barrado) e memoriza a que funcionou; se o lote for recusado por tamanho, ele se parte
+ao meio e repete, sem você ter que adivinhar um `--batch-size`. Se o lote for barrado
+por IP em todas as variantes, ele **avisa e cai sozinho** para o modo uma-a-uma —
+que também dá para forçar direto com `--provider gtx-serial`.
+
+A qualidade continua sendo a do Google, inferior à do DeepL em JA→PT: revise os
+`.json` antes de injetar.
+
+**Com chave (DeepL, melhor qualidade):**
 
 ```powershell
 python stcm2l.py translate .\txt -o .\txt_ptbr `
@@ -95,25 +118,17 @@ python stcm2l.py translate .\txt -o .\txt_ptbr `
     --cache .\cache.json
 ```
 
-**Sem chave nenhuma (`gtx`):**
-
-```powershell
-python stcm2l.py translate .\txt -o .\txt_ptbr `
-    --provider gtx --source JA --target PT-BR --only-cjk --cache .\cache.json
-```
-
-`gtx` fala com o endpoint público `translate_a/single` usando só a biblioteca padrão —
-é o mesmo que o site do Google Tradutor usa. Não precisa de chave nem de dependência,
-mas é **não oficial**: atende um texto por vez e tem qualidade inferior à do DeepL em
-JA→PT. Ao levar `429`, ele tenta sozinho as outras variantes de `client` do endpoint
-(`dict-chrome-ex` costuma passar onde `gtx` é barrado) e memoriza a que funcionou.
+A conta Free do DeepL dá 500 mil caracteres/mês e reseta todo mês; quando a cota
+estoura, o `gtx` acima assume sem custo nenhum.
 
 O `--cache` é gravado **a cada lote**: se a tradução morrer no meio, rodar de novo com
 o mesmo arquivo de cache retoma de onde parou, sem re-traduzir o que já saiu.
 
 Outros provedores: `--provider google` (chave da Google Cloud Translation API),
 `--provider googletrans` (biblioteca não oficial — **costuma quebrar**: ela depende de
-um formato de resposta que o Google muda sem aviso; prefira `gtx`), `--provider none`.
+um formato de resposta que o Google muda sem aviso, além de ser lenta; prefira `gtx`),
+`--provider gtx-serial` (o `gtx` uma fala por requisição, só como plano B),
+`--provider none`.
 
 > **Não mande identificador para o tradutor.** O `extract` exporta todo bloco de texto do
 > script, e isso inclui IDs de voz, nomes de arquivo e flags (`NO00_0012`,

@@ -5,6 +5,10 @@ stcm2l.translate
 Traducao automatica JA/EN -> PT-BR com protecao dos marcadores da engine.
 
 Provedores:
+  * gtx        - endpoint publico do Google, EM LOTE. Sem chave, sem
+                 dependencia: milhares de falas numa unica requisicao.
+  * gtx-serial - o mesmo endpoint uma fala por requisicao. Lento; so serve de
+                 plano B para quando o lote e barrado por IP.
   * deepl      - API oficial (Free ou Pro). Apenas urllib (sem dependencias).
   * google     - Cloud Translation API v2 por chave. Apenas urllib.
   * googletrans- biblioteca `googletrans` (opcional, endpoint nao oficial).
@@ -25,7 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
 from .core import Stcm2lError
 from .textio import TextEntry, classify_text, protect_tags, restore_tags
@@ -34,6 +38,7 @@ DEEPL_FREE = "https://api-free.deepl.com/v2/translate"
 DEEPL_PRO = "https://api.deepl.com/v2/translate"
 GOOGLE_V2 = "https://translation.googleapis.com/language/translate/v2"
 GTX = "https://translate.googleapis.com/translate_a/single"
+GTX_BULK = "https://translate.googleapis.com/translate_a/t"
 
 
 class TranslationError(Stcm2lError):
@@ -48,6 +53,15 @@ class TranslationError(Stcm2lError):
 
 class FatalTranslationError(TranslationError):
     fatal = True
+
+
+class LoteRecusado(TranslationError):
+    """
+    O lote foi recusado inteiro (corpo grande demais, contagem divergente).
+
+    Nao e culpa do texto: partir a lista no meio e repetir resolve, e e
+    exatamente o que `gtx_bulk_split` faz.
+    """
 
 
 class TransientTranslationError(TranslationError):
@@ -105,7 +119,8 @@ _ERROS_DE_REDE = (urllib.error.URLError, TimeoutError, socket.timeout, ssl.SSLEr
                   http.client.HTTPException, ConnectionError, OSError)
 
 
-def _post(url: str, payload: bytes, headers: dict[str, str], timeout: int = 30) -> dict:
+def _post(url: str, payload: bytes, headers: dict[str, str],
+          timeout: int = 30) -> Any:
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
@@ -163,11 +178,15 @@ def gtx_one(text: str, source: str | None, target: str) -> str:
     raise ultimo or TranslationError("endpoint gtx indisponivel")
 
 
-def gtx_batch(texts: list[str], source: str | None, target: str = "pt",
-              pause: float = 0.15,
-              on_done: Callable[[int, str], None] | None = None) -> list[str]:
+def gtx_serial(texts: list[str], source: str | None, target: str = "pt",
+               pause: float = 0.15,
+               on_done: Callable[[int, str], None] | None = None) -> list[str]:
     """
-    O endpoint atende um texto por vez; a pausa evita o 429.
+    Um texto por requisicao, com pausa entre eles para evitar o 429.
+
+    E o caminho ANTIGO, mantido so como plano B: prefira `gtx_bulk_split`,
+    que faz o mesmo trabalho em uma requisicao em vez de N. Aqui a pausa
+    existe justamente porque cada fala custa uma ida ate o Google.
 
     `on_done(indice, traducao)` e chamado a cada texto pronto: como cada um
     custa uma requisicao, quem chama pode gravar o cache no caminho e nao perder
@@ -188,9 +207,9 @@ def gtx_batch(texts: list[str], source: str | None, target: str = "pt",
                     raise FatalTranslationError(
                         "o endpoint gtx respondeu 429 em todas as variantes de "
                         "cliente. Ele e gratuito e nao oficial: costuma barrar por "
-                        "volume e por IP. Aumente --delay, tente de novo mais tarde, "
-                        "ou use --provider deepl com uma chave Free (500 mil "
-                        "caracteres/mes, sem custo)."
+                        "volume e por IP. Aumente --delay, tente de novo mais tarde "
+                        "(ou de outro IP), ou use --provider deepl com uma chave "
+                        "Free (500 mil caracteres/mes, sem custo)."
                     ) from exc
                 time.sleep(2.0 * attempt)
         if on_done:
@@ -198,6 +217,95 @@ def gtx_batch(texts: list[str], source: str | None, target: str = "pt",
         if pause and i + 1 < len(texts):
             time.sleep(pause)
     return out
+
+
+def _gtx_normaliza(raw: Any, esperado: int) -> list[str]:
+    """
+    Achata a resposta do translate_a/t, cuja FORMA muda conforme o `sl`.
+
+    Com origem explicita (`sl=ja`) o endpoint devolve uma lista de textos;
+    com `sl=auto` devolve uma lista de pares [texto, idioma_detectado]. Quem
+    so trata a primeira forma entrega o idioma detectado como se fosse
+    traducao - erro que passa calado. Funcao pura de proposito: o selftest
+    cobre as duas formas sem tocar a rede.
+    """
+    if not isinstance(raw, list):
+        raise TranslationError(
+            f"resposta inesperada do endpoint gtx em lote: {str(raw)[:200]}")
+
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, list) and item and isinstance(item[0], str):
+            out.append(item[0])
+        else:
+            raise TranslationError(
+                f"resposta inesperada do endpoint gtx em lote: {str(raw)[:200]}")
+
+    if len(out) != esperado:
+        # devolver desalinhado corromperia a traducao inteira em silencio
+        raise LoteRecusado(
+            f"o endpoint gtx em lote devolveu {len(out)} traducoes para "
+            f"{esperado} textos")
+    return out
+
+
+def gtx_bulk(texts: list[str], source: str | None, target: str = "pt",
+             timeout: int = 60) -> list[str]:
+    """
+    TODOS os textos numa unica requisicao - o irmao em lote do translate_a/single.
+
+    Aceita varios `q` e devolve as traducoes na mesma ordem. Vai por POST
+    porque o GET estoura o limite de tamanho da URL por volta de 50 falas,
+    enquanto o corpo aguenta milhares.
+    """
+    global _gtx_client
+    body = urllib.parse.urlencode([("q", t) for t in texts]).encode("utf-8")
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    tentativas = (_gtx_client,) if _gtx_client else GTX_CLIENTS
+    ultimo: TranslationError | None = None
+    for client in tentativas:
+        params = urllib.parse.urlencode({
+            "client": client, "sl": source or "auto", "tl": target,
+        })
+        try:
+            raw = _post(f"{GTX_BULK}?{params}", body, headers, timeout=timeout)
+        except TranslationError as exc:
+            ultimo = exc
+            if "HTTP 400" in str(exc) or "HTTP 413" in str(exc):
+                raise LoteRecusado(str(exc)) from exc   # lote grande demais
+            if "HTTP 429" in str(exc) or "HTTP 403" in str(exc):
+                continue          # cliente barrado: tenta a proxima variante
+            raise
+        _gtx_client = client
+        return _gtx_normaliza(raw, len(texts))
+
+    raise FatalTranslationError(
+        "o endpoint gtx em lote foi barrado em todas as variantes de cliente"
+        + (f" ({ultimo})" if ultimo else "")
+    )
+
+
+def gtx_bulk_split(texts: list[str], source: str | None,
+                   target: str = "pt") -> list[str]:
+    """
+    `gtx_bulk` que se reparte sozinho quando o lote e recusado inteiro.
+
+    Ninguem precisa adivinhar um --batch-size seguro: 2000 falas vao numa
+    requisicao so quando cabem, e quando nao cabem viram 1000 + 1000.
+    """
+    try:
+        return gtx_bulk(texts, source, target)
+    except LoteRecusado:
+        if len(texts) == 1:
+            raise
+    meio = len(texts) // 2
+    return (gtx_bulk_split(texts[:meio], source, target)
+            + gtx_bulk_split(texts[meio:], source, target))
 
 
 def deepl_batch(texts: list[str], api_key: str, source: str | None,
@@ -241,8 +349,8 @@ def googletrans_batch(texts: list[str], source: str | None, target: str = "pt") 
         raise TranslationError(
             "a biblioteca googletrans quebrou ao ler a resposta do Google "
             f"({exc}). Ela depende de um formato nao oficial que muda sem aviso. "
-            "Use --provider gtx, que fala com o mesmo endpoint usando so a "
-            "biblioteca padrao."
+            "Use --provider gtx, que fala com o mesmo endpoint em lote usando "
+            "so a biblioteca padrao - e e muito mais rapido."
         ) from exc
     if not isinstance(res, list):
         res = [res]
@@ -255,7 +363,8 @@ def googletrans_batch(texts: list[str], source: str | None, target: str = "pt") 
 
 def translate_entries(entries: list[TextEntry], provider: str, api_key: str | None,
                       source: str | None = None, target: str = "PT-BR",
-                      batch_size: int = 40, retries: int = 3, delay: float = 1.0,
+                      batch_size: int | None = None, retries: int = 3,
+                      delay: float = 1.0,
                       cache_path: Path | None = None, overwrite: bool = False,
                       only_cjk: bool = False, skip_ids: bool = False,
                       log: Callable[[str], None] = print) -> int:
@@ -267,6 +376,10 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
         return 0
     if provider in ("deepl", "deepl-pro", "google") and not api_key:
         raise TranslationError(f"o provedor '{provider}' exige --api-key")
+    if batch_size is None:
+        # o lote do gtx engole milhares de falas de uma vez; o DeepL tem teto
+        # de 50 textos por requisicao, entao la o lote continua pequeno
+        batch_size = 500 if provider == "gtx" else 40
 
     cache: dict[str, str] = {}
     if cache_path and cache_path.exists():
@@ -308,7 +421,20 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
                 elif provider == "google":
                     got = google_batch(payload, api_key or "", source, target.lower())
                 elif provider == "gtx":
-                    got = gtx_batch(
+                    alvo = target.split("-")[0].lower()
+                    try:
+                        got = gtx_bulk_split(payload, source, alvo)
+                    except FatalTranslationError as exc:
+                        # barrado por IP: melhor lento do que sem traducao
+                        log(f"  {exc}")
+                        log("  caindo para o modo 1-a-1: uma requisicao por fala, "
+                            "com pausa entre elas - isto vai demorar")
+                        got = gtx_serial(
+                            payload, source, alvo,
+                            on_done=lambda i, txt: _registrar(chunk[i], txt),
+                        )
+                elif provider == "gtx-serial":
+                    got = gtx_serial(
                         payload, source, target.split("-")[0].lower(),
                         on_done=lambda i, txt: _registrar(chunk[i], txt),
                     )

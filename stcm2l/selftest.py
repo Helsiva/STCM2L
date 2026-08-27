@@ -131,14 +131,14 @@ def _check_otome(tmpdir: Path, log) -> bool:
     ok = True
 
     same, detail = roundtrip_check(dat.read_bytes())
-    log(f"[11] otome: round-trip byte-a-byte: {'OK' if same else 'FALHOU'} ({detail})")
+    log(f"[12] otome: round-trip byte-a-byte: {'OK' if same else 'FALHOU'} ({detail})")
     ok &= same
 
     script = parse(dat.read_bytes())
     entries = collect_entries(script, "cp932")
     got = [e.original for e in entries]
     text_ok = got == inline + pool
-    log(f"[12] otome: {len(entries)} textos extraidos "
+    log(f"[13] otome: {len(entries)} textos extraidos "
         f"({'OK' if text_ok else 'FALHOU'}) - inclui o pool da cauda")
     if not text_ok:
         log(f"     esperado={inline + pool}\n     obtido  ={got}")
@@ -152,7 +152,7 @@ def _check_otome(tmpdir: Path, log) -> bool:
     report = inject_file(dat, texts_file, out_dat, out_encoding="utf-8")
     inj_ok = report.applied == len(entries) and not any(
         p.startswith("ERRO") for p in report.problems)
-    log(f"[13] otome: injecao: {report.applied} aplicados, "
+    log(f"[14] otome: injecao: {report.applied} aplicados, "
         f"{report.grown} maiores ({'OK' if inj_ok else 'FALHOU'})")
     ok &= inj_ok
 
@@ -160,7 +160,7 @@ def _check_otome(tmpdir: Path, log) -> bool:
     got = [e.original for e in collect_entries(new, "utf-8")]
     want = [e.translation for e in entries]
     text_ok = got == want
-    log(f"[14] otome: textos apos injecao: {'OK' if text_ok else 'FALHOU'}")
+    log(f"[15] otome: textos apos injecao: {'OK' if text_ok else 'FALHOU'}")
     ok &= text_ok
 
     # os ponteiros para o pool da cauda tem que seguir o pool que se moveu
@@ -174,7 +174,7 @@ def _check_otome(tmpdir: Path, log) -> bool:
         if el.kind == "action" and el.params and el.params[0][0]:
             apontados.append(destinos.get(el.params[0][0]))
     ptr_ok = bool(apontados) and all(a in esperado for a in apontados)
-    log(f"[15] otome: ponteiros para o pool da cauda: {'OK' if ptr_ok else 'FALHOU'}")
+    log(f"[16] otome: ponteiros para o pool da cauda: {'OK' if ptr_ok else 'FALHOU'}")
     if not ptr_ok:
         log(f"     apontados={apontados}\n     esperado={esperado}")
     ok &= ptr_ok
@@ -305,6 +305,29 @@ def run(verbose: bool = True) -> bool:
         log(f"[10] protecao/restauracao de marcadores: {'OK' if prot_ok else 'FALHOU'} "
             f"({len(tags)} marcadores)")
         ok &= prot_ok
+
+        # 10) leitura da resposta do gtx em lote (as DUAS formas, sem rede)
+        from .translate import LoteRecusado, TranslationError, _gtx_normaliza
+        plana = _gtx_normaliza(["Ola", "Adeus"], 2)                  # sl=ja
+        pares = _gtx_normaliza([["Ola", "ja"], ["Ola mundo", "en"]], 2)  # sl=auto
+        desalinhado = False
+        try:
+            _gtx_normaliza(["Ola"], 2)
+        except LoteRecusado:
+            desalinhado = True
+        lixo = False
+        try:
+            _gtx_normaliza({"error": "quota"}, 1)
+        except TranslationError:
+            lixo = True
+        gtx_ok = (plana == ["Ola", "Adeus"] and pares == ["Ola", "Ola mundo"]
+                  and desalinhado and lixo)
+        log(f"[11] resposta do gtx em lote (lista plana, pares de sl=auto, "
+            f"contagem divergente): {'OK' if gtx_ok else 'FALHOU'}")
+        if not gtx_ok:
+            log(f"     plana={plana} pares={pares} "
+                f"desalinhado={desalinhado} lixo={lixo}")
+        ok &= gtx_ok
 
         # 9) formato Otomate (sem CODE_END_, bloco wordcount, pool na cauda)
         log("\n=== amostra otomate (cp932, sem CODE_END_) ===")
