@@ -33,7 +33,8 @@ from .pipeline import (
 from .shorten import (
     ESFORCO_PADRAO, PROVEDORES, ResumoEncurtamento, fazer_chamador,
     geometria_dos_originais, larguras_dos_originais, percentis,
-    perfil_dos_originais, piso_e_teto, relatorio_seco, shorten_entries,
+    amostra_de_prosa, perfil_dos_originais, piso_e_teto, relatorio_seco,
+    shorten_entries,
 )
 from .textio import (
     FOLGA_DEFAULT, MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, PISO_PERCENTIL,
@@ -708,6 +709,7 @@ def cmd_shorten(args: argparse.Namespace) -> int:
         por_linha: list[int] = []
         linhas_orig: dict[int, int] = {}
         perfil: dict[str, int] = {}
+        amostras_prosa: list[tuple[str, str]] = []
         faixas = ((10, "1-10 colunas"), (25, "11-25 colunas"),
                   (50, "26-50 colunas"), (10 ** 9, "50+ colunas"))
         for path in files:
@@ -719,6 +721,9 @@ def cmd_shorten(args: argparse.Namespace) -> int:
             larguras.extend(larguras_dos_originais(entries))
             for k, v in perfil_dos_originais(entries).items():
                 perfil[k] = perfil.get(k, 0) + v
+            if len(amostras_prosa) < 6:
+                amostras_prosa.extend((path.name, t)
+                                      for t in amostra_de_prosa(entries, 2))
             lg, ct = geometria_dos_originais(entries)
             por_linha.extend(lg)
             for k, v in ct.items():
@@ -760,11 +765,14 @@ def cmd_shorten(args: argparse.Namespace) -> int:
             fala = perfil.get("cjk", 0) + perfil.get("prose", 0)
             print(f"\n  o que esta no campo 'original': {perfil.get('cjk', 0)} japones, "
                   f"{perfil.get('prose', 0)} prosa latina, {perfil.get('id', 0)} identificador")
-            if fala and perfil.get("prose", 0) > fala * 0.3:
-                print("  ⚠ prosa latina demais para um roteiro japones. Este .json parece "
-                      "CONTAMINADO (extraido de uma saida ja injetada, ou lido na "
-                      "codificacao errada) - a medida da caixa sai errada e o "
-                      "encurtamento gasta a toa. Re-extraia dos .DAT limpos.")
+            if amostras_prosa:
+                print("  exemplos do que caiu como prosa latina:")
+                for nome, t in amostras_prosa[:6]:
+                    print(f"    {nome}: {t[:60]!r}")
+                print("    -> se isso for PORTUGUES, o .json esta contaminado e precisa "
+                      "ser re-extraido dos .DAT limpos.")
+                print("    -> se for ingles/nome de recurso, sempre esteve ai e nao ha "
+                      "problema nenhum.")
         if larguras:
             larguras.sort()
             pc = percentis(larguras)

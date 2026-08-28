@@ -740,6 +740,25 @@ def perfil_dos_originais(entries: Iterable[TextEntry]) -> dict[str, int]:
     return perfil
 
 
+def amostra_de_prosa(entries: Iterable[TextEntry], quantas: int = 6) -> list[str]:
+    """
+    Alguns originais classificados como prosa latina.
+
+    O numero sozinho nao distingue as duas causas possiveis: `.json`
+    contaminado (o `original` virou portugues) ou texto latino que sempre
+    esteve no script (nome de cenario, palavra da engine). Ler tres exemplos
+    resolve em um segundo o que a estatistica deixa ambiguo.
+    """
+    out: list[str] = []
+    for e in entries:
+        texto = getattr(e, "original", "")
+        if texto.strip() and classify_text(texto) == "prose":
+            out.append(texto)
+            if len(out) >= quantas:
+                break
+    return out
+
+
 def percentis(valores: list[int]) -> dict[str, int]:
     """P50/P75/P90/P95/P99 e o maximo, para escolher o piso com dado e nao chute."""
     if not valores:
