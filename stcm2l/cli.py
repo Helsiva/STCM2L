@@ -803,7 +803,8 @@ def cmd_ruler(args: argparse.Namespace) -> int:
         print("ERRO: a saida sobrescreveria o original. Use outro caminho.")
         return 1
     try:
-        trocadas = patch_regua(src, out, args.count, args.encoding)
+        trocadas = patch_regua(src, out, args.count, args.encoding,
+                               inicio=args.start, todas=args.all)
     except Stcm2lError as exc:
         print(f"[ERRO] {src.name}: {exc}")
         return 1
@@ -811,8 +812,10 @@ def cmd_ruler(args: argparse.Namespace) -> int:
         print(f"{src.name}: nenhuma fala encontrada para trocar pela regua.")
         return 1
     print(f"[ OK ] {src.name}: {len(trocadas)} falas trocadas por regua -> {out}\n")
-    for eid, regua in trocadas:
+    for eid, regua in trocadas[:8]:
         print(f"  [{eid}] {regua!r}")
+    if len(trocadas) > 8:
+        print(f"  ... e mais {len(trocadas) - 8} falas")
     print("\nColoque este arquivo no jogo e leia na tela:")
     print("  1. a regua de COLUNAS corta em que numero? -> esse e o --max-line real")
     print("  2. a regua de LINHAS mostra ate qual L? -> esse e o --max-lines real")
@@ -993,6 +996,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("input", help="um .DAT do comeco do jogo (prologo)")
     sp.add_argument("-o", "--output", required=True, help=".DAT de saida com as reguas")
     sp.add_argument("--count", type=int, default=6, help="quantas falas trocar")
+    sp.add_argument("--start", type=int, default=0,
+                    help="pula as N primeiras falas antes de comecar a trocar")
+    sp.add_argument("--all", action="store_true",
+                    help="troca TODAS as falas do arquivo. Use quando a regua 'nao "
+                         "apareceu': o comeco do arquivo e cheio de identificador, entao "
+                         "as primeiras falas de verdade costumam estar la no fim. Deixa o "
+                         "arquivo ilegivel de proposito - e build de medicao.")
     sp.add_argument("--encoding", help="forca a codificacao de leitura")
     sp.set_defaults(func=cmd_ruler)
 

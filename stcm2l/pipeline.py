@@ -524,7 +524,8 @@ REGUA_ALTURA = "L1-aaaa\nL2-bbbb\nL3-cccc\nL4-dddd\nL5-eeee"
 
 
 def patch_regua(dat_path: Path, out_path: Path, quantidade: int = 6,
-                forced_encoding: str | None = None) -> list[tuple[str, str]]:
+                forced_encoding: str | None = None, inicio: int = 0,
+                todas: bool = False) -> list[tuple[str, str]]:
     """
     Troca as primeiras falas do arquivo por reguas de medicao.
 
@@ -536,19 +537,30 @@ def patch_regua(dat_path: Path, out_path: Path, quantidade: int = 6,
 
     As falas alternam entre a regua de largura e a de altura. Devolve
     [(id, regua)] do que foi trocado.
+
+    `todas=True` troca TODAS as falas do arquivo. E o modo a usar quando a regua
+    "nao apareceu": os primeiros blocos que parecem texto costumam estar no fim
+    do arquivo (o comeco e cheio de identificador e chamada de recurso), entao a
+    regua cai depois de onde o jogador chegou. Trocando tudo, a primeira fala da
+    cena ja e uma regua. O arquivo fica ilegivel de proposito - e uma build de
+    medicao, nao de jogar.
     """
     data = dat_path.read_bytes()
     script = parse(data)
     encoding = detect_encoding(script, forced_encoding)
     trocadas: list[tuple[str, str]] = []
 
+    vistas = 0
     for elem, seg, db in script.iter_data_blocks():
-        if len(trocadas) >= quantidade:
+        if not todas and len(trocadas) >= quantidade:
             break
         texto = decode_block(db.content, encoding)
         if texto is None or not looks_like_text(texto):
             continue
         if classify_text(texto) == "id" or len(texto.strip()) < 6:
+            continue
+        vistas += 1
+        if vistas <= inicio:
             continue
         regua = REGUA_LARGURA if len(trocadas) % 2 == 0 else REGUA_ALTURA
         db.set_content(encode_text(regua, encoding, fallback="ascii"))
