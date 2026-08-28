@@ -31,8 +31,9 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .textio import (
-    MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, TextEntry, box_budget, box_overflow,
-    classify_text, detect_newline, line_count, protect_tags, restore_tags,
+    FOLGA_DEFAULT, MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, PISO_PERCENTIL, TextEntry,
+    box_budget, box_overflow, classify_text, detect_newline, display_width,
+    entry_budget, line_count, piso_do_lote, protect_tags, restore_tags,
     visible_width, wrap_text,
 )
 from .translate import (
@@ -65,6 +66,9 @@ ESFORCO_PADRAO = "low"
 #: visiveis, e se e a passada de resumo. Devolve a lista na MESMA ordem.
 Chamador = Callable[[list[str], list[int], bool], list[str]]
 
+#: uma unidade de trabalho do encurtamento: (traducao crua, orcamento em colunas)
+Alvo = tuple[str, int]
+
 
 # ---------------------------------------------------------------------------
 # Provedor: Claude
@@ -77,8 +81,9 @@ SYSTEM_PROMPT = """\
 Voce encurta falas de visual novel japonesa traduzidas para portugues do Brasil, \
 para que caibam na caixa de texto do jogo.
 
-Cada fala vem com um orcamento em colunas visiveis. Devolva uma versao que caiba \
-nesse orcamento.
+Cada fala vem com um orcamento em colunas visiveis, medido no texto original dela. \
+O orcamento VARIA de fala para fala dentro do mesmo lote: use o numero que acompanha \
+cada uma, nunca o da anterior.
 
 Regras:
 - Preserve o sentido, o registro e a VOZ do personagem. Giria continua giria, \
@@ -372,6 +377,24 @@ def gemini_encurtar(textos: list[str], orcamentos: list[int], resumir: bool = Fa
 # ---------------------------------------------------------------------------
 
 @dataclass
+class Exemplo:
+    """Um antes/depois para o relatorio. Largura manda; linha vira coadjuvante."""
+    id: str
+    antes: str
+    depois: str
+    colunas_antes: int
+    colunas_depois: int
+    orcamento: int
+    linhas_antes: int
+    linhas_depois: int
+
+    @property
+    def faltam(self) -> int:
+        """Colunas que ainda precisam sair. <= 0 quer dizer que coube."""
+        return (self.colunas_depois - self.orcamento) if self.orcamento else 0
+
+
+@dataclass
 class ResumoEncurtamento:
     candidatas: int = 0
     resolvidas_1: int = 0        # couberam so com a reescrita
@@ -379,8 +402,10 @@ class ResumoEncurtamento:
     restantes: int = 0           # nem o resumo resolveu - marcadas para revisao
     marcadores_perdidos: int = 0
     do_cache: int = 0
-    #: (id, antes, depois, linhas_antes, linhas_depois)
-    exemplos: list[tuple[str, str, str, int, int]] = field(default_factory=list)
+    #: de qual criterio veio cada candidata - serve para calibrar a folga
+    por_largura: int = 0
+    por_linhas: int = 0
+    exemplos: list[Exemplo] = field(default_factory=list)
 
     @property
     def resolvidas(self) -> int:
@@ -415,21 +440,55 @@ def _com_retry(chamar: Chamador, textos: list[str], orcamentos: list[int],
     raise TranslationError("retry esgotado")
 
 
-def _chave(texto: str, max_line: int, max_lines: int) -> str:
-    """O orcamento entra na chave: a mesma fala com caixa diferente tem outra resposta."""
-    return f"{max_line}x{max_lines}|{texto}"
+def _chave(texto: str, orcamento: int, max_line: int, max_lines: int) -> str:
+    """
+    O orcamento entra na chave, e nao e detalhe.
+
+    Ele e o unico numero que aparece no pedido ao modelo, entao a resposta e
+    especifica dele. Sem isso o cache serviria a versao de 46 colunas para uma
+    entrada com orcamento 30 - e o erro seria silencioso, porque o valor entra
+    em `melhor` ANTES da conferencia e so seria pego na passada de resumo.
+    """
+    return f"{max_line}x{max_lines}w{orcamento}|{texto}"
+
+
+def candidatas_orcadas(entries: Iterable[TextEntry],
+                       max_line: int = MAX_LINE_DEFAULT,
+                       max_lines: int = MAX_LINES_DEFAULT,
+                       newline: str = "auto", folga: float = FOLGA_DEFAULT,
+                       percentil: int = PISO_PERCENTIL,
+                       tolerancia: int = 0,
+                       usar_original: bool = True) -> list[tuple[TextEntry, int]]:
+    """
+    As entradas que estouram - por LARGURA ou por LINHAS - com o orcamento de cada.
+
+    O orcamento de largura sai do texto original da propria fala; o piso sai do
+    percentil das larguras deste lote, porque original curto nao prova caixa
+    estreita. Identificador nunca entra.
+    """
+    itens = list(entries)
+    nl = detect_newline(itens, None if newline == "auto" else newline)
+    teto = box_budget(max_line, max_lines)
+    piso = piso_do_lote((e.original for e in itens), percentil) if usar_original else 0
+
+    out: list[tuple[TextEntry, int]] = []
+    for e in itens:
+        if not e.translation.strip() or classify_text(e.original) == "id":
+            continue
+        orc = entry_budget(e.original, piso, folga, teto) if usar_original else teto
+        largura = display_width(e.translation)
+        estoura_largura = bool(orc) and largura > orc + tolerancia
+        estoura_linhas = box_overflow(e.translation, max_line, max_lines, nl) > 0
+        if estoura_largura or estoura_linhas:
+            out.append((e, orc))
+    return out
 
 
 def candidatas(entries: Iterable[TextEntry], max_line: int = MAX_LINE_DEFAULT,
                max_lines: int = MAX_LINES_DEFAULT,
-               newline: str = "auto") -> list[TextEntry]:
+               newline: str = "auto", **kw) -> list[TextEntry]:
     """As entradas traduzidas que estouram a caixa. Identificador nunca entra."""
-    itens = list(entries)
-    nl = detect_newline(itens, None if newline == "auto" else newline)
-    return [e for e in itens
-            if e.translation.strip()
-            and classify_text(e.original) != "id"
-            and box_overflow(e.translation, max_line, max_lines, nl) > 0]
+    return [e for e, _ in candidatas_orcadas(entries, max_line, max_lines, newline, **kw)]
 
 
 def shorten_entries(entries: list[TextEntry], chamar_modelo: Chamador, *,
@@ -437,6 +496,9 @@ def shorten_entries(entries: list[TextEntry], chamar_modelo: Chamador, *,
                     max_lines: int = MAX_LINES_DEFAULT,
                     newline: str = "auto", batch_size: int = 25,
                     retries: int = 3, delay: float = 2.0,
+                    folga: float = FOLGA_DEFAULT,
+                    percentil: int = PISO_PERCENTIL,
+                    tolerancia: int = 0, usar_original: bool = True,
                     cache_path: Path | None = None,
                     log: Callable[[str], None] = print) -> ResumoEncurtamento:
     """
@@ -447,104 +509,139 @@ def shorten_entries(entries: list[TextEntry], chamar_modelo: Chamador, *,
     """
     rep = ResumoEncurtamento()
     nl = detect_newline(entries, None if newline == "auto" else newline)
-    alvos = candidatas(entries, max_line, max_lines, newline)
+    alvos = candidatas_orcadas(entries, max_line, max_lines, newline,
+                               folga, percentil, tolerancia, usar_original)
     rep.candidatas = len(alvos)
     if not alvos:
         return rep
+    for e, orc in alvos:
+        if orc and display_width(e.translation) > orc + tolerancia:
+            rep.por_largura += 1
+        else:
+            rep.por_linhas += 1
 
     cache: dict[str, str] = {}
     if cache_path and cache_path.exists():
         cache = json.loads(cache_path.read_text(encoding="utf-8"))
 
-    # deduplica por texto: a mesma fala repetida no roteiro so e encurtada uma vez
-    unicos: list[str] = []
-    vistos: set[str] = set()
-    for e in alvos:
-        if e.translation not in vistos:
-            vistos.add(e.translation)
-            unicos.append(e.translation)
+    # Deduplica pelo PAR (texto, orcamento), nao so pelo texto: a mesma traducao
+    # pode servir a originais de larguras diferentes, e servir a resposta de um
+    # orcamento ao outro deixaria o segundo estourando. Deduplicar pelo MENOR
+    # orcamento economizaria requisicoes, mas faria o orcamento depender de quais
+    # arquivos entraram na rodada - e a chave do cache junto.
+    unicos: list[Alvo] = []
+    vistos: set[Alvo] = set()
+    for e, orc in alvos:
+        chave = (e.translation, orc)
+        if chave not in vistos:
+            vistos.add(chave)
+            unicos.append(chave)
 
-    protegidos = {t: protect_tags(t) for t in unicos}
-    orcamento = box_budget(max_line, max_lines)
+    # proteger nao depende do orcamento, entao a chave aqui e so o texto
+    protegidos = {t: protect_tags(t) for t, _ in unicos}
 
-    #: texto original -> melhor versao PROTEGIDA obtida ate agora
-    melhor: dict[str, str] = {}
-    for t in unicos:
-        guardado = cache.get(_chave(t, max_line, max_lines))
+    melhor: dict[Alvo, str] = {}
+    for alvo in unicos:
+        guardado = cache.get(_chave(alvo[0], alvo[1], max_line, max_lines))
         if guardado is not None:
-            melhor[t] = guardado
+            melhor[alvo] = guardado
             rep.do_cache += 1
 
-    def _cabe(protegido: str, texto_base: str) -> bool:
+    def _cabe(protegido: str, texto_base: str, orcamento: int) -> bool:
+        # largura primeiro: e O(len), enquanto box_overflow quebra o texto todo
+        # e, na maioria dos casos, e a largura que reprova
+        if orcamento and visible_width(protegido) > orcamento:
+            return False
+        # ⚠ cru vs protegido importa nos DOIS sentidos: visible_width tem que ver
+        # o protegido (senao o marcador reprova a fala), e box_overflow tem que
+        # ver o restaurado (no protegido a quebra literal virou placeholder e
+        # line_count nao a veria)
         restaurado, _ = restore_tags(protegido, protegidos[texto_base][1])
         return box_overflow(restaurado, max_line, max_lines, nl) == 0
 
-    def _rodada(pendentes: list[str], resumir: bool) -> None:
+    def _rodada(pendentes: list[Alvo], resumir: bool) -> None:
         rotulo = "resumo" if resumir else "reescrita"
         for ini in range(0, len(pendentes), batch_size):
             lote = pendentes[ini:ini + batch_size]
-            payload = [protegidos[t][0] for t in lote]
-            saida = _com_retry(chamar_modelo, payload, [orcamento] * len(lote),
+            payload = [protegidos[t][0] for t, _ in lote]
+            orcamentos = [orc for _, orc in lote]
+            saida = _com_retry(chamar_modelo, payload, orcamentos,
                                resumir, retries, delay, log)
             if len(saida) != len(payload):
                 raise TranslationError(
                     f"o modelo devolveu {len(saida)} falas para {len(payload)} pedidas")
-            for texto, encurtado in zip(lote, saida):
+            for alvo, encurtado in zip(lote, saida):
                 limpo = " ".join(encurtado.split())
-                melhor[texto] = limpo
+                melhor[alvo] = limpo
                 if cache_path is not None:
-                    cache[_chave(texto, max_line, max_lines)] = limpo
+                    cache[_chave(alvo[0], alvo[1], max_line, max_lines)] = limpo
             if cache_path is not None:
                 _salvar_cache(cache_path, cache)
             log(f"  {rotulo}: {min(ini + batch_size, len(pendentes))}/{len(pendentes)}")
 
     # passada 1 - reescrever o que nao veio do cache
-    pendentes = [t for t in unicos if t not in melhor]
+    pendentes = [a for a in unicos if a not in melhor]
     if pendentes:
         _rodada(pendentes, resumir=False)
 
     # passada 2 - resumir so o que continua estourando
-    ainda = [t for t in unicos if not _cabe(melhor.get(t, protegidos[t][0]), t)]
+    ainda: set[Alvo] = {a for a in unicos
+                        if not _cabe(melhor.get(a, protegidos[a[0]][0]), a[0], a[1])}
     if ainda:
         log(f"  {len(ainda)} falas nao couberam na reescrita; tentando resumir")
-        _rodada(ainda, resumir=True)
+        _rodada([a for a in unicos if a in ainda], resumir=True)
 
     # aplica nas entradas
-    for e in alvos:
+    for e, orc in alvos:
         base = e.translation
-        protegido = melhor.get(base)
+        alvo = (base, orc)
+        protegido = melhor.get(alvo)
         if protegido is None:
             continue
         restaurado, ok = restore_tags(protegido, protegidos[base][1])
         novo = wrap_text(restaurado, max_line, nl)
-        antes, depois = line_count(wrap_text(base, max_line, nl)), line_count(novo)
-        if depois >= antes and box_overflow(novo, max_line, max_lines, nl) > 0:
-            # o modelo nao ajudou: manter o que ja estava e sinalizar
+        linhas_antes = line_count(wrap_text(base, max_line, nl))
+        linhas_depois = line_count(novo)
+        col_antes, col_depois = display_width(base), display_width(novo)
+        sobra_linhas = box_overflow(novo, max_line, max_lines, nl)
+        falta_largura = max(0, col_depois - orc) if orc else 0
+
+        # so descarta quando piorou nos DOIS criterios. A guarda antiga olhava so
+        # linha, e por isso jogava fora uma reescrita que cortava 25 colunas mas
+        # continuava com o mesmo numero de linhas - exatamente o caso util aqui.
+        piorou = linhas_depois >= linhas_antes and col_depois >= col_antes
+        if piorou and (sobra_linhas or falta_largura):
             e.needs_review = True
             e.notes.append(
-                f"nao coube na caixa ({antes} linhas, cabem {max_lines}) e o "
-                f"encurtamento nao reduziu - encurte a mao")
+                f"nao coube ({col_depois} colunas para um orcamento de {orc}) e o "
+                f"encurtamento nao reduziu; faltam {falta_largura} - encurte a mao")
             rep.restantes += 1
             continue
+
         e.translation = novo
         if not ok:
             e.needs_review = True
             e.notes.append("marcadores perdidos no encurtamento - revisar manualmente")
             rep.marcadores_perdidos += 1
-        sobra = box_overflow(novo, max_line, max_lines, nl)
-        if sobra:
+        if sobra_linhas or falta_largura:
             e.needs_review = True
-            e.notes.append(
-                f"ainda passa {sobra} linha(s) da caixa - encurte a mao")
+            partes = []
+            if falta_largura:
+                partes.append(f"faltam {falta_largura} colunas (orcamento {orc})")
+            if sobra_linhas:
+                partes.append(f"passa {sobra_linhas} linha(s) da caixa")
+            e.notes.append(" e ".join(partes) + " - encurte a mao")
             rep.restantes += 1
+            # o texto original so vai para a nota quando alguem precisa revisar:
+            # anexar em todo sucesso incharia o .json a toa
+            e.notes.append(f"antes: {base!r}")
+        elif alvo in ainda:
+            rep.resolvidas_2 += 1
         else:
-            if base in ainda:
-                rep.resolvidas_2 += 1
-            else:
-                rep.resolvidas_1 += 1
-        e.notes.append(f"encurtado de {antes} para {depois} linhas; antes: {base!r}")
+            rep.resolvidas_1 += 1
         if len(rep.exemplos) < 50:
-            rep.exemplos.append((e.id, base, novo, antes, depois))
+            rep.exemplos.append(Exemplo(e.id, base, novo, col_antes, col_depois,
+                                        orc, linhas_antes, linhas_depois))
 
     if cache_path is not None:
         _salvar_cache(cache_path, cache)
@@ -570,17 +667,31 @@ def linhas_por_fala(entries: Iterable[TextEntry], max_line: int = MAX_LINE_DEFAU
 
 def relatorio_seco(entries: Iterable[TextEntry], max_line: int = MAX_LINE_DEFAULT,
                    max_lines: int = MAX_LINES_DEFAULT,
-                   newline: str = "auto") -> list[tuple[TextEntry, int, int]]:
+                   newline: str = "auto", folga: float = FOLGA_DEFAULT,
+                   percentil: int = PISO_PERCENTIL, tolerancia: int = 0,
+                   usar_original: bool = True
+                   ) -> list[tuple[TextEntry, int, int, int]]:
     """
     O que estoura, sem chamar a API (--dry-run).
 
-    Devolve (entrada, linhas_atuais, colunas_visiveis) para dimensionar o gasto
-    antes de gastar.
+    Devolve (entrada, linhas, colunas, orcamento), ordenado pelo DEFICIT
+    decrescente: quem precisa cortar mais aparece primeiro, que e a ordem util
+    para decidir se vale gastar.
     """
     itens = list(entries)
     nl = detect_newline(itens, None if newline == "auto" else newline)
     out = []
-    for e in candidatas(itens, max_line, max_lines, newline):
+    for e, orc in candidatas_orcadas(itens, max_line, max_lines, newline,
+                                     folga, percentil, tolerancia, usar_original):
         quebrada = wrap_text(e.translation, max_line, nl)
-        out.append((e, line_count(quebrada), visible_width(protect_tags(e.translation)[0])))
+        out.append((e, line_count(quebrada), display_width(e.translation), orc))
+    out.sort(key=lambda t: (t[2] - t[3]) if t[3] else 0, reverse=True)
     return out
+
+
+def piso_e_teto(entries: Iterable[TextEntry], max_line: int = MAX_LINE_DEFAULT,
+                max_lines: int = MAX_LINES_DEFAULT,
+                percentil: int = PISO_PERCENTIL) -> tuple[int, int]:
+    """O piso calculado neste lote e o teto da caixa - para o --dry-run exibir."""
+    return (piso_do_lote((e.original for e in entries), percentil),
+            box_budget(max_line, max_lines))

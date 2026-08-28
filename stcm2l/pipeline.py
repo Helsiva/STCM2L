@@ -22,8 +22,9 @@ from .core import (
 #: um trecho cru que comeca com um marcador conhecido e area de dados, nao codigo
 KNOWN_TAGS = (TAG_CODE_START, TAG_CODE_END, TAG_GLOBAL_DATA)
 from .textio import (
-    MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, TextEntry, box_overflow, classify_text,
-    decode_block, detect_encoding,
+    MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, TextEntry, box_budget, box_overflow,
+    classify_text, decode_block, detect_encoding, display_width, entry_budget,
+    piso_do_lote,
     encoding_report,
     detect_newline, dump_entries, encode_text, load_entries, looks_like_text,
     wrap_text,
@@ -174,6 +175,9 @@ class InjectReport:
     #: falas que passam do numero de linhas da caixa (nao impede a injecao)
     overflow_linhas: int = 0
     pior_overflow_linhas: int = 0
+    #: falas mais largas que o original delas (idem, so reporta)
+    overflow_largura: int = 0
+    pior_overflow_largura: int = 0
     #: entradas recusadas por nao caber no bloco original (modo --fit)
     overflow: int = 0
     #: maior estouro visto, em bytes (para dimensionar o corte manual)
@@ -300,6 +304,10 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
         script, entries, meta.get("encoding"))
     encoding = out_encoding or src_encoding
     nl = detect_newline(entries, None if newline == "auto" else newline)
+    # o orcamento de largura sai do proprio original de cada fala; o piso, do
+    # percentil deste arquivo. Ver textio.entry_budget.
+    piso = piso_do_lote(e.original for e in entries)
+    teto = box_budget(max_line, max_lines)
     report = InjectReport(source=dat_path, output=out_path)
     report.src_encoding = src_encoding
     report.match_originais = (acertos, testados)
@@ -388,6 +396,14 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
                     f"{entry.id}: passa {sobra} linha(s) da caixa "
                     f"({max_lines} linhas de {max_line} colunas) - o jogo vai cortar. "
                     f"Rode 'shorten' neste arquivo.")
+            orc = entry_budget(entry.original, piso, teto=teto)
+            falta = (display_width(translation) - orc) if orc else 0
+            if falta > 0:
+                report.overflow_largura += 1
+                report.pior_overflow_largura = max(report.pior_overflow_largura, falta)
+                report.problems.append(
+                    f"{entry.id}: {falta} colunas mais larga que o original permite "
+                    f"(orcamento {orc}) - o jogo vai cortar. Rode 'shorten'.")
 
         blob = encode_text(translation, encoding, fallback=fallback)
         old_lens = {db.raw_len, db.padded_len, len(db.content)}

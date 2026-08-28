@@ -286,7 +286,9 @@ virava cinco linhas atravessava o pipeline inteiro e só aparecia cortada no jog
 Como português é mais comprido que japonês, isso não é caso isolado: é estrutural.
 
 ```powershell
-# 1. quanto estoura, SEM chamar a API nem gastar nada
+# 1. quanto estoura, SEM chamar a API nem gastar nada.
+#    RODE SEMPRE PRIMEIRO: o criterio por largura pega muito mais falas que o
+#    de linhas, e esse numero e o que dimensiona o gasto.
 python stcm2l.py shorten .\txt_ptbr -r --dry-run
 
 # 2. encurtar de verdade
@@ -297,10 +299,29 @@ python stcm2l.py shorten .\txt_ptbr -o .\txt_curto -r --cache .\shorten-cache.js
 python stcm2l.py shorten .\txt_curto -r --dry-run
 ```
 
-O orçamento é `--max-line` × `--max-lines` (padrão 50 × 3), com folga: a quebra por
-palavra desperdiça o fim de cada linha, então o alvo declarado ao modelo é ~90% do
-produto — 135 colunas, não 150. Pedir 150 devolve texto que fecha na conta e estoura
-na quebra.
+### O orçamento sai do próprio original
+
+Medir a caixa do jogo é difícil e o chute erra: com 50 × 3 colunas, **95% das falas
+traduzidas cabiam numa única linha e o texto cortava na tela mesmo assim**.
+
+Então o orçamento não é chutado — sai do texto original de cada fala. O jogo já exibiu
+aquele original naquela caixa, logo ele é a medida empírica do que cabe, por fala:
+
+```
+orçamento = max( largura_do_original × 1.15 ,  piso )   , limitado pelo teto da caixa
+```
+
+- **+15%** (`--width-slack`) porque português é estruturalmente mais comprido que
+  japonês; exigir paridade exata espremeria toda fala.
+- **piso** = P90 das larguras dos originais **do mesmo arquivo** (`--percentil`).
+  Existe porque a largura do original é limite **inferior** da caixa, não a caixa:
+  `え？` ocupa 4 colunas e isso não quer dizer que a caixa tenha 4 — quer dizer que ela
+  mostra pelo menos isso. Sem o piso, toda fala curta viraria um orçamento minúsculo.
+- **teto** = o antigo `--max-line` × `--max-lines`, mantido como trava adicional.
+
+Kana e kanji contam 2 colunas, então a comparação japonês ↔ português é direta.
+`--no-original-budget` volta ao critério antigo, e `--width-tolerance N` evita pagar
+uma requisição para cortar poucas colunas.
 
 **Duas passadas.** Primeiro *reescrever*: a mesma informação e a mesma voz do
 personagem, com menos palavras. O que continuar estourando vai para *resumir*, que pode

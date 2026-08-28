@@ -550,108 +550,216 @@ def _check_fit(tmpdir: Path, log) -> bool:
 
 
 def _check_shorten(tmpdir: Path, log) -> bool:
-    """Orcamento de caixa (largura x linhas) e a escalada de encurtamento."""
-    from .shorten import ResumoEncurtamento, candidatas, shorten_entries
-    from .textio import box_budget, box_overflow, line_count
+    """Orcamento por fala (largura do original) e a escalada de encurtamento."""
+    from .shorten import candidatas_orcadas, shorten_entries
+    from .textio import (
+        box_budget, box_overflow, display_width, entry_budget, line_count,
+        piso_do_lote,
+    )
     ok = True
 
-    # -- [40] as primitivas de orcamento -------------------------------------
+    # -- [40] primitivas de linha --------------------------------------------
     tres = "Linha um aqui\nLinha dois aqui\nLinha tres aqui"
     cinco = "\n".join(f"Linha {i}" for i in range(5))
     literal = "Linha um\\nLinha dois\\nLinha tres"
-    marcada = "#Name[2]" * 12 + "curto"       # 96 colunas de marcador, 5 de texto
-    # kana conta 2 colunas. Precisa de espaco entre os grupos: wrap_text nunca
-    # parte uma palavra, entao japones corrido (sem espaco) fica numa linha so
-    # por mais largo que seja - limite real, nao defeito do teste.
-    kana = " ".join("\u3042" * 10 for _ in range(6))   # 6 grupos de 20 colunas
+    marcada = "#Name[2]" * 12 + "curto"
+    kana = " ".join("\u3042" * 10 for _ in range(6))
     conta_ok = (line_count(tres) == 3 and line_count(cinco) == 5
                 and line_count(literal) == 3 and line_count("") == 0)
     box_ok = (box_overflow(tres, 50, 3) == 0
               and box_overflow(cinco, 50, 3) == 2
               and box_overflow(literal, 50, 3) == 0
-              # marcador nao ocupa coluna: nao pode empurrar linha
               and box_overflow(marcada, 50, 3) == 0
-              # 6 grupos de 20 colunas nao cabem em 50: tem que quebrar
               and line_count(wrap_text(kana, 50)) == 3
-              # e japones corrido nao quebra em lugar nenhum
+              # japones corrido nao tem ponto de quebra: fica numa linha so
               and line_count(wrap_text("\u3042" * 40, 50)) == 1)
-    orc_ok = box_budget(50, 3) == 135 and box_budget(50, 0) == 0
-    log(f"[40] orcamento de caixa (linhas, marcadores, kana, alvo): "
-        f"{'OK' if conta_ok and box_ok and orc_ok else 'FALHOU'}")
-    if not (conta_ok and box_ok and orc_ok):
-        log(f"     conta={conta_ok} box={box_ok} orcamento={orc_ok} "
-            f"marcada={box_overflow(marcada, 50, 3)} kana={line_count(wrap_text(kana, 50))}")
-    ok &= conta_ok and box_ok and orc_ok
+    log(f"[40] primitivas de linha (marcador, kana, japones corrido): "
+        f"{'OK' if conta_ok and box_ok else 'FALHOU'}")
+    ok &= conta_ok and box_ok
 
-    # -- [41] a escalada reescrever -> resumir --------------------------------
+    # -- [40b] primitivas de largura e orcamento ------------------------------
+    largura_ok = (display_width("#Name[2]abc") == 3        # marcador nao ocupa
+                  and display_width("ab\ncd") == 4          # quebra real nao ocupa
+                  and display_width("ab\\ncd") == 4         # nem a literal
+                  and display_width("\u3042\u3044") == 4       # kana = 2 colunas
+                  and display_width("") == 0)
+    # RE-quebrar nao pode mudar a medida - e disso que depende nao reclassificar
+    # uma fala ja encurtada como candidata. (A primeira quebra muda mesmo: o
+    # wrap_text descarta o espaco do ponto de quebra, de proposito.)
+    _q = wrap_text(kana, 50)
+    idem_ok = display_width(wrap_text(_q, 50)) == display_width(_q)
+    piso_ok = (piso_do_lote(["a" * 40] * 9 + ["a" * 160]) == 40   # exclui o outlier
+               and piso_do_lote([]) == 0)
+    teto = box_budget(50, 3)
+    orc_ok = (entry_budget("\u3048\uff1f", piso=40) == 40             # o piso segura
+              and entry_budget("\u3042" * 20, piso=40) == 46        # 40 col +15%
+              and entry_budget("\u3042" * 80, piso=40, teto=teto) == teto   # o teto trava
+              and entry_budget("", piso=0) == 0                # sem base
+              and entry_budget("a" * 40, folga=0.30) >= entry_budget("a" * 40, folga=0.15))
+    e40b = largura_ok and idem_ok and piso_ok and orc_ok
+    log(f"[40b] largura e orcamento (marcador, quebra, piso, teto): "
+        f"{'OK' if e40b else 'FALHOU'}")
+    if not e40b:
+        log(f"     largura={largura_ok} idempotente={idem_ok} piso={piso_ok} orc={orc_ok}")
+    ok &= e40b
+
+    # -- montagem comum aos testes de escalada --------------------------------
     def _e(i, jp, pt):
         return TextEntry(id=TextEntry.make_id(i, 0), elem=i, seg=0, opcode=None,
                          encoding="cp932", original=jp, translation=pt)
 
-    gigante = ("Uma fala propositalmente enorme que nao cabe de jeito nenhum na caixa "
-               "do jogo porque tem muito mais texto do que tres linhas comportam, e "
-               "segue por mais um tanto so para garantir o estouro.")
-    media = ("Uma fala media que ainda passa das tres linhas mas nao por muito, "
-             "servindo para a primeira passada resolver sozinha o caso dela aqui "
-             "sem precisar de resumo nenhum.")
-    ents = [
-        _e(1, "\u306a\u3093\u3067", gigante),          # so o resumo resolve
-        _e(2, "\u3082\u3046", media),                  # a reescrita resolve
-        _e(3, "\u3042\u3042", "Fala curta."),           # nem entra
-        _e(4, "SYSTEM_GLOBAL", gigante),                # identificador: nunca entra
-    ]
-    alvos = candidatas(ents, 50, 3)
-    sel_ok = {e.id for e in alvos} == {ents[0].id, ents[1].id}
+    JP_CURTO, JP_MEDIO, JP_GIGANTE = "\u3048\uff1f", "\u3042" * 20, "\u3042" * 80
+    longa = ("Uma fala propositalmente enorme que nao cabe de jeito nenhum na caixa "
+             "do jogo porque tem muito mais texto do que o original comportava, e "
+             "segue por mais um tanto so para garantir o estouro de largura.")
 
-    chamadas: list[tuple[bool, int]] = []
+    def _com_recheio(alvos):
+        """Enche o lote para o P90 ser o 40 do meio, e nao o outlier de 160."""
+        recheio = [_e(100 + i, JP_MEDIO, "Curta.") for i in range(19)]
+        return list(alvos) + recheio
+
+    # -- [41] a escalada, e o orcamento que chega ao modelo -------------------
+    ents = _com_recheio([
+        _e(1, JP_CURTO, longa),        # piso
+        _e(2, JP_MEDIO, longa),        # 40 col +15%
+        _e(3, JP_GIGANTE, longa * 3),  # teto
+        _e(4, "SYSTEM_GLOBAL", longa), # identificador: nunca entra
+    ])
+    esperados = {1: 40, 2: 46, 3: teto}
+    alvos = candidatas_orcadas(ents, 50, 3)
+    sel_ok = {e.id for e, _ in alvos} == {ents[0].id, ents[1].id, ents[2].id}
+    orc_por_id = {e.id: orc for e, orc in alvos}
+    certo_ok = all(orc_por_id.get(TextEntry.make_id(i, 0)) == v
+                   for i, v in esperados.items())
+
+    chamadas: list[tuple[bool, list[str], list[int]]] = []
 
     def falso(textos, orcamentos, resumir):
-        chamadas.append((resumir, len(textos)))
-        saida = []
-        for t in textos:
-            if resumir:
-                saida.append("Versao curta.")
-            elif t.startswith("Uma fala media"):
-                saida.append("Versao media que agora cabe direitinho na caixa.")
-            else:
-                saida.append(t)          # a reescrita nao resolveu esta
-        return saida
+        chamadas.append((resumir, list(textos), list(orcamentos)))
+        return ["Curta." if resumir else t for t in textos]
 
     rep = shorten_entries(ents, falso, max_line=50, max_lines=3, log=lambda m: None)
-    passadas_ok = (len(chamadas) == 2 and chamadas[0] == (False, 2)
-                   and chamadas[1] == (True, 1))
-    # so os alvos: o identificador foi excluido de proposito e continua estourando
-    cabe_ok = all(box_overflow(e.translation, 50, 3) == 0 for e in ents[:3])
-    conta_rep = (rep.candidatas == 2 and rep.resolvidas_1 == 1
-                 and rep.resolvidas_2 == 1 and rep.restantes == 0)
-    intocado = ents[3].translation == gigante        # identificador ficou como estava
-    e41 = sel_ok and passadas_ok and cabe_ok and conta_rep and intocado
-    log(f"[41] escalada: 1a passada com {chamadas[0][1] if chamadas else '?'} falas, "
-        f"2a so com o que sobrou; identificador intocado: {'OK' if e41 else 'FALHOU'}")
+    # ⚠ ESTA e a asserção que reprova um `[orcamento] * len(lote)`
+    variados_ok = bool(chamadas) and len(set(chamadas[0][2])) > 1
+    duas_passadas = len(chamadas) == 2 and chamadas[1][0] is True
+    mesmo_orc = (duas_passadas
+                 and all(o in chamadas[0][2] for o in chamadas[1][2]))
+    intocado = ents[3].translation == longa
+    e41 = sel_ok and certo_ok and variados_ok and duas_passadas and mesmo_orc and intocado
+    log(f"[41] orcamento POR FALA chega ao modelo "
+        f"(piso {orc_por_id.get('A00001_S00')}, +15% {orc_por_id.get('A00002_S00')}, "
+        f"teto {orc_por_id.get('A00003_S00')}): {'OK' if e41 else 'FALHOU'}")
     if not e41:
-        log(f"     selecao={sel_ok} passadas={chamadas} cabe={cabe_ok} "
-            f"resumo=({rep.candidatas},{rep.resolvidas_1},{rep.resolvidas_2},{rep.restantes}) "
+        log(f"     selecao={sel_ok} valores={certo_ok} variados={variados_ok} "
+            f"passadas={[(r, o) for r, _, o in chamadas]} mesmo_orc={mesmo_orc} "
             f"id_intocado={intocado}")
     ok &= e41
 
-    # -- [42] marcadores perdidos e o que nunca cabe --------------------------
-    com_tag = "#Name[2]" + gigante
-    ents2 = [_e(5, "\u306a\u3093\u3067", com_tag)]
+    # -- [41b] dedup pelo PAR (texto, orcamento) ------------------------------
+    mesmos = _com_recheio([_e(1, JP_CURTO, longa), _e(2, JP_MEDIO, longa)])
+    ch2: list[list[int]] = []
+
+    def falso2(textos, orcamentos, resumir):
+        ch2.append(list(orcamentos))
+        return ["Curta." for _ in textos]
+
+    shorten_entries(mesmos, falso2, max_line=50, max_lines=3, log=lambda m: None)
+    # a MESMA traducao com orcamentos diferentes vai duas vezes
+    par_ok = bool(ch2) and len(ch2[0]) == 2 and len(set(ch2[0])) == 2
+
+    iguais = _com_recheio([_e(1, JP_MEDIO, longa), _e(2, JP_MEDIO, longa)])
+    ch3: list[list[int]] = []
+
+    def falso3(textos, orcamentos, resumir):
+        ch3.append(list(orcamentos))
+        return ["Curta." for _ in textos]
+
+    shorten_entries(iguais, falso3, max_line=50, max_lines=3, log=lambda m: None)
+    # mesmo texto E mesmo orcamento: o dedup continua valendo
+    dedup_ok = bool(ch3) and len(ch3[0]) == 1
+    e41b = par_ok and dedup_ok
+    log(f"[41b] dedup pelo par: orcamentos diferentes vao separados "
+        f"({ch2[0] if ch2 else '?'}), iguais colapsam ({ch3[0] if ch3 else '?'}): "
+        f"{'OK' if e41b else 'FALHOU'}")
+    ok &= e41b
+
+    # -- [41c] o cache nao vaza entre orcamentos ------------------------------
+    cache = tmpdir / "shorten-cache.json"
+    contador = {"n": 0}
+
+    def falso4(textos, orcamentos, resumir):
+        contador["n"] += len(textos)
+        return ["Curta." for _ in textos]
+
+    a = _com_recheio([_e(1, JP_MEDIO, longa)])
+    shorten_entries(a, falso4, max_line=50, max_lines=3, cache_path=cache,
+                    log=lambda m: None)
+    apos_1 = contador["n"]
+    b = _com_recheio([_e(1, JP_MEDIO, longa)])
+    r2 = shorten_entries(b, falso4, max_line=50, max_lines=3, cache_path=cache,
+                         log=lambda m: None)
+    apos_2 = contador["n"]
+    c = _com_recheio([_e(1, JP_MEDIO, longa)])
+    shorten_entries(c, falso4, max_line=50, max_lines=3, folga=0.40,
+                    cache_path=cache, log=lambda m: None)
+    apos_3 = contador["n"]
+    e41c = apos_1 > 0 and apos_2 == apos_1 and r2.do_cache >= 1 and apos_3 > apos_2
+    log(f"[41c] cache: 1a rodada {apos_1} chamadas, repetida {apos_2} (reaproveitou), "
+        f"com outra folga {apos_3} (chamou de novo): {'OK' if e41c else 'FALHOU'}")
+    ok &= e41c
+
+    # -- [41d] escalada disparada por LARGURA, nao por linha ------------------
+    # 60 colunas cabem em 2 linhas de 50, entao box_overflow == 0; mas passam do
+    # orcamento de 46 do original. Com o _cabe antigo isto nunca escalaria.
+    media = "Uma fala de tamanho medio que cabe em duas linhas mas passa da largura."
+    largura_ents = _com_recheio([_e(1, JP_MEDIO, media)])
+    sem_linhas = box_overflow(media, 50, 3) == 0
+    entrou = any(e.id == "A00001_S00" for e, _ in candidatas_orcadas(largura_ents, 50, 3))
+    ch5: list[bool] = []
+
+    def falso5(textos, orcamentos, resumir):
+        ch5.append(resumir)
+        return ["Curta." if resumir else t for t in textos]
+
+    shorten_entries(largura_ents, falso5, max_line=50, max_lines=3, log=lambda m: None)
+    e41d = sem_linhas and entrou and ch5 == [False, True]
+    log(f"[41d] fala que cabe nas linhas mas estoura a largura escala para o resumo: "
+        f"{'OK' if e41d else 'FALHOU'}")
+    if not e41d:
+        log(f"     cabe_em_linhas={sem_linhas} virou_candidata={entrou} passadas={ch5}")
+    ok &= e41d
+
+    # -- [42] marcadores, deficit em colunas, e a guarda de nao-regressao -----
+    com_tag = "#Name[2]" + longa
+    ents2 = _com_recheio([_e(1, JP_MEDIO, com_tag)])
 
     def perde_tudo(textos, orcamentos, resumir):
-        # devolve sem os placeholders E ainda grande: os dois defeitos de uma vez
-        return [gigante for _ in textos]
+        return [longa for _ in textos]      # sem os placeholders E ainda largo
 
-    rep2 = shorten_entries(ents2, perde_tudo, max_line=50, max_lines=3, log=lambda m: None)
+    rep2 = shorten_entries(ents2, perde_tudo, max_line=50, max_lines=3,
+                           log=lambda m: None)
     e = ents2[0]
-    e42 = (e.needs_review and rep2.restantes == 1
-           and "#Name[2]" in e.translation          # restore_tags reanexou a perdida
-           and any("encurte a mao" in n for n in e.notes))
-    log(f"[42] marcador perdido e fala que nunca cabe viram needs_review: "
-        f"{'OK' if e42 else 'FALHOU'}")
+    marcador_ok = (e.needs_review and rep2.restantes == 1
+                   and "#Name[2]" in e.translation
+                   and any("faltam" in n and "coluna" in n for n in e.notes))
+
+    # a guarda antiga (so linhas) jogaria fora uma reescrita que corta colunas
+    # mas mantem o numero de linhas. A nova tem que ACEITAR.
+    # 92 colunas -> 2 linhas; 56 colunas -> tambem 2 linhas. Mesmo numero de
+    # linhas, largura bem menor: e o caso que a guarda antiga descartava.
+    duas_linhas = ("Uma fala com bastante texto aqui que ocupa exatamente duas "
+                   "linhas inteiras na caixa do jogo.")
+    menor = "Uma fala bem menor que ainda ocupa duas linhas na caixa."
+    ents3 = _com_recheio([_e(1, JP_MEDIO, duas_linhas)])
+    shorten_entries(ents3, lambda t, o, r: [menor for _ in t],
+                    max_line=50, max_lines=3, log=lambda m: None)
+    aceitou = ents3[0].translation.replace("\n", " ") == menor
+    e42 = marcador_ok and aceitou
+    log(f"[42] marcador perdido vira needs_review com deficit em colunas, e a "
+        f"guarda aceita corte de largura: {'OK' if e42 else 'FALHOU'}")
     if not e42:
-        log(f"     revisar={e.needs_review} restantes={rep2.restantes} "
-            f"notes={e.notes} texto={e.translation[:60]!r}")
+        log(f"     marcador={marcador_ok} aceitou_corte={aceitou} "
+            f"notes={ents2[0].notes} depois={ents3[0].translation!r}")
     ok &= e42
     return bool(ok)
 

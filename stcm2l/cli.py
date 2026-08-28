@@ -32,10 +32,11 @@ from .pipeline import (
 )
 from .shorten import (
     ESFORCO_PADRAO, PROVEDORES, ResumoEncurtamento, fazer_chamador,
-    linhas_por_fala, relatorio_seco, shorten_entries,
+    piso_e_teto, relatorio_seco, shorten_entries,
 )
 from .textio import (
-    MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, box_budget, dump_entries, load_entries,
+    FOLGA_DEFAULT, MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, PISO_PERCENTIL,
+    dump_entries, load_entries,
 )
 from .translate import TranslationError, translate_entries
 
@@ -273,6 +274,7 @@ def cmd_inject(args: argparse.Namespace) -> int:
     applied = 0
     overflow = 0
     overflow_linhas = 0
+    overflow_largura = 0
     id_changes = 0
     divergentes = 0
     for path in files:
@@ -306,6 +308,7 @@ def cmd_inject(args: argparse.Namespace) -> int:
         applied += rep.applied
         overflow += rep.overflow
         overflow_linhas += rep.overflow_linhas
+        overflow_largura += rep.overflow_largura
         divergentes += rep.divergentes
         id_changes += rep.id_changes
         extra = ""
@@ -313,8 +316,8 @@ def cmd_inject(args: argparse.Namespace) -> int:
             extra += f", {rep.overflow} NAO couberam"
         if rep.id_changes:
             extra += f", {rep.id_changes} identificadores"
-        if rep.overflow_linhas:
-            extra += f", {rep.overflow_linhas} passam da caixa"
+        if rep.overflow_linhas or rep.overflow_largura:
+            extra += f", {max(rep.overflow_linhas, rep.overflow_largura)} passam da caixa"
         if args.fit:
             extra += "  [layout preservado]" if rep.layout_preserved else "  [LAYOUT MUDOU!]"
         print(f"[ OK ] {path.name}: {rep.applied} textos, {rep.skipped} pulados{extra} -> {target}")
@@ -345,9 +348,10 @@ def cmd_inject(args: argparse.Namespace) -> int:
         print(f"{id_changes} identificador(es) tiveram traducao recusada - o jogo procura voz, "
               f"trilha e o proximo script por esse nome. Reveja o .json e apague a traducao "
               f"dessas entradas.")
-    if overflow_linhas:
-        print(f"{overflow_linhas} fala(s) passam das {args.max_lines} linhas da caixa e o "
-              f"jogo vai cortar na tela. Rode 'stcm2l shorten' nos .json antes de injetar.")
+    if overflow_linhas or overflow_largura:
+        print(f"{overflow_largura} fala(s) mais largas que o original permite e "
+              f"{overflow_linhas} passando das {args.max_lines} linhas - o jogo vai cortar "
+              f"na tela. Rode 'stcm2l shorten' nos .json antes de injetar.")
     if overflow:
         print(f"{overflow} fala(s) nao couberam no bloco original e ficaram em japones. "
               f"Encurte a traducao dessas entradas e rode de novo.")
@@ -696,46 +700,65 @@ def cmd_shorten(args: argparse.Namespace) -> int:
     # --dry-run nao chama a API: primeiro se mede o gasto, depois se gasta
     if args.dry_run:
         total = 0
-        n_entradas = n_traduzidas = 0
-        histograma: dict[int, int] = {}
+        n_entradas = n_traduzidas = por_largura = por_linhas = 0
+        deficit: dict[str, int] = {}
+        pisos: list[tuple[str, int, int]] = []
+        faixas = ((10, "1-10 colunas"), (25, "11-25 colunas"),
+                  (50, "26-50 colunas"), (10 ** 9, "50+ colunas"))
         for path in files:
             entries, _ = load_entries(path)
             n_entradas += len(entries)
             n_traduzidas += sum(1 for e in entries if e.translation.strip())
-            for linhas in linhas_por_fala(entries, args.max_line, args.newline):
-                chave = min(linhas, 6)
-                histograma[chave] = histograma.get(chave, 0) + 1
-            pend = relatorio_seco(entries, args.max_line, args.max_lines, args.newline)
+            piso, teto = piso_e_teto(entries, args.max_line, args.max_lines,
+                                     args.percentil)
+            pend = relatorio_seco(entries, args.max_line, args.max_lines,
+                                  args.newline, args.width_slack, args.percentil,
+                                  args.width_tolerance, not args.no_original_budget)
             total += len(pend)
             if pend:
-                pior = max(n for _, n, _ in pend)
-                print(f"[{len(pend):>5}] {path.name}  (a maior tem {pior} linhas)")
-                for e, linhas, colunas in pend[:args.limit]:
-                    print(f"        [{e.id}] {linhas} linhas / {colunas} colunas: "
-                          f"{e.translation[:60]!r}")
-        orc = box_budget(args.max_line, args.max_lines)
+                pisos.append((path.name, piso, teto))
+            for e, linhas, colunas, orc in pend:
+                falta = colunas - orc if orc else 0
+                if falta > 0:
+                    por_largura += 1
+                    for limite, rotulo in faixas:
+                        if falta <= limite:
+                            deficit[rotulo] = deficit.get(rotulo, 0) + 1
+                            break
+                else:
+                    por_linhas += 1
+            if pend and not args.quiet:
+                print(f"[{len(pend):>5}] {path.name}  (piso {piso}, teto {teto})")
+                for e, linhas, colunas, orc in pend[:args.limit]:
+                    falta = colunas - orc if orc else 0
+                    print(f"        [{e.id}] {colunas} colunas / orcamento {orc}"
+                          + (f" -> cortar {falta}" if falta > 0 else "")
+                          + f" | {linhas} linhas: {e.translation[:50]!r}")
+
         print(f"\n{len(files)} arquivo(s), {n_entradas} entradas, "
               f"{n_traduzidas} com traducao.")
-        if histograma:
-            print("  quantas linhas cada fala traduzida ocupa a "
-                  f"{args.max_line} colunas:")
-            for linhas in sorted(histograma):
-                rotulo = f"{linhas}+" if linhas >= 6 else str(linhas)
-                marca = "  <- estoura" if linhas > args.max_lines else ""
-                print(f"    {rotulo:>2} linha(s): {histograma[linhas]:>6}{marca}")
-        print(f"\n{total} falas estouram {args.max_lines} linhas de {args.max_line} "
-              f"colunas (alvo: {orc} colunas visiveis).")
+        if deficit:
+            print("\n  quanto falta cortar de cada fala candidata:")
+            for _, rotulo in faixas:
+                if rotulo in deficit:
+                    dica = ("   <- barato, considere --width-tolerance"
+                            if rotulo.startswith("1-10") else "")
+                    print(f"    {rotulo:>14}: {deficit[rotulo]:>7}{dica}")
+        if pisos:
+            print(f"\n  piso do lote (P{args.percentil} dos originais): "
+                  + ", ".join(f"{n}={p}" for n, p, _ in pisos[:3])
+                  + (" ..." if len(pisos) > 3 else "")
+                  + f" | teto da caixa: {pisos[0][2]}")
+        print(f"\n{total} falas estouram: {por_largura} por LARGURA "
+              f"(orcamento do original +{args.width_slack:.0%}), "
+              f"{por_linhas} por LINHAS ({args.max_lines} de {args.max_line} colunas).")
         if total:
-            print(f"Rode sem --dry-run para encurtar. Estimativa: ~{total // 25 + 1} "
-                  f"requisicoes em lotes de 25.")
+            print(f"Rode sem --dry-run para encurtar. Estimativa: "
+                  f"~{total // args.batch_size + 1} requisicoes em lotes de "
+                  f"{args.batch_size}.")
         elif not n_traduzidas:
             print("Nenhuma entrada tem traducao: nao havia o que medir. O --texts "
                   "aponta para os .json EXTRAIDOS em vez dos TRADUZIDOS?")
-        elif histograma.get(args.max_lines, 0) > n_traduzidas * 0.15:
-            print(f"Nada estoura, mas {histograma[args.max_lines]} falas batem "
-                  f"EXATAMENTE em {args.max_lines} linhas. Se no jogo elas estao "
-                  f"cortando, a caixa e mais estreita que {args.max_line} colunas - "
-                  f"meça a largura real e re-rode com --max-line menor.")
         return 0
 
     if not args.output:
@@ -762,7 +785,9 @@ def cmd_shorten(args: argparse.Namespace) -> int:
             rep = shorten_entries(
                 entries, chamar, max_line=args.max_line, max_lines=args.max_lines,
                 newline=args.newline, batch_size=args.batch_size,
-                retries=args.retries, cache_path=cache,
+                retries=args.retries, folga=args.width_slack,
+                percentil=args.percentil, tolerancia=args.width_tolerance,
+                usar_original=not args.no_original_budget, cache_path=cache,
                 log=lambda m: print(m),
             )
         except Stcm2lError as exc:
@@ -776,16 +801,20 @@ def cmd_shorten(args: argparse.Namespace) -> int:
               f"({rep.resolvidas_2} precisaram de resumo), {rep.restantes} para revisar"
               + (f", {rep.do_cache} do cache" if rep.do_cache else "")
               + f" -> {target}")
-        for eid, antes, depois, la, ld in rep.exemplos[:args.limit]:
-            print(f"     [{eid}] {la} -> {ld} linhas")
-            print(f"       antes : {antes[:70]!r}")
-            print(f"       depois: {depois.replace(chr(10), ' / ')[:70]!r}")
+        for ex in rep.exemplos[:args.limit]:
+            print(f"     [{ex.id}] {ex.colunas_antes} -> {ex.colunas_depois} colunas "
+                  f"(orcamento {ex.orcamento})  |  {ex.linhas_antes} -> "
+                  f"{ex.linhas_depois} linhas")
+            print(f"       antes : {ex.antes[:70]!r}")
+            print(f"       depois: {ex.depois.replace(chr(10), ' / ')[:70]!r}")
+            if ex.faltam > 0:
+                print(f"       ainda faltam {ex.faltam} colunas")
         for campo in ("candidatas", "resolvidas_1", "resolvidas_2", "restantes",
-                      "marcadores_perdidos", "do_cache"):
+                      "marcadores_perdidos", "do_cache", "por_largura", "por_linhas"):
             setattr(total, campo, getattr(total, campo) + getattr(rep, campo))
 
-    print(f"\n{total.resolvidas}/{total.candidatas} falas passaram a caber em "
-          f"{args.max_lines} linhas.")
+    print(f"\n{total.resolvidas}/{total.candidatas} falas passaram a caber "
+          f"({total.por_largura} eram de largura, {total.por_linhas} de linhas).")
     if total.restantes:
         print(f"{total.restantes} continuam estourando e sairam com needs_review - "
               f"encurte essas a mao no .json.")
@@ -1021,8 +1050,24 @@ def build_parser() -> argparse.ArgumentParser:
                                       "ANTHROPIC_API_KEY do ambiente.")
     sp.add_argument("--batch-size", type=int, default=25, help="falas por requisicao")
     sp.add_argument("--retries", type=int, default=3)
+    sp.add_argument("--width-slack", type=float, default=FOLGA_DEFAULT, metavar="F",
+                    help=f"folga sobre a largura do original (padrao {FOLGA_DEFAULT * 100:.0f}%%). "
+                         f"Portugues e mais comprido que japones; exigir paridade exata "
+                         f"espreme demais.")
+    sp.add_argument("--percentil", type=int, default=PISO_PERCENTIL, metavar="N",
+                    help=f"percentil das larguras dos originais usado como PISO do "
+                         f"orcamento (padrao {PISO_PERCENTIL}). Original curto nao prova "
+                         f"caixa estreita, so que a caixa mostra pelo menos aquilo.")
+    sp.add_argument("--width-tolerance", type=int, default=0, metavar="N",
+                    help="nao vira candidata por menos de N colunas de estouro. Evita "
+                         "pagar uma requisicao para cortar 3 colunas.")
+    sp.add_argument("--no-original-budget", action="store_true",
+                    help="ignora a largura do original e usa so o orcamento de caixa "
+                         "(--max-line x --max-lines), como era antes.")
     sp.add_argument("--cache", help="arquivo .json de cache (re-rodar sai de graca)")
     sp.add_argument("--limit", type=int, default=5, help="exemplos mostrados por arquivo")
+    sp.add_argument("-q", "--quiet", action="store_true",
+                    help="no --dry-run, so o resumo (sem a lista por arquivo)")
     sp.add_argument("-r", "--recursive", action="store_true")
     quebra(sp)
     sp.set_defaults(func=cmd_shorten)

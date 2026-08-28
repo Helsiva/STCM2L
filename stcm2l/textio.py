@@ -14,6 +14,7 @@ Marcadores preservados (nunca traduzidos):
 from __future__ import annotations
 
 import json
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field, asdict
@@ -301,6 +302,13 @@ MAX_LINES_DEFAULT = 3
 #: quebra, entao o alvo declarado e uma fracao disso.
 BUDGET_SLACK = 0.9
 
+#: folga sobre a largura do original. Portugues e estruturalmente mais comprido
+#: que japones, e exigir paridade exata espremeria toda fala.
+FOLGA_DEFAULT = 0.15
+
+#: percentil usado como PISO do orcamento. Ver `piso_do_lote`.
+PISO_PERCENTIL = 90
+
 #: quebras ja presentes no texto (o grupo captura para preservar a forma original)
 _SPLIT_NEWLINE_RE = re.compile(r"(\\n|\r\n|\n|\r)")
 
@@ -349,11 +357,75 @@ def visible_width(text: str) -> int:
 
     Marcadores ja trocados por placeholders (protect_tags) nao ocupam coluna
     nenhuma - o jogo nao os desenha. Kana/kanji ocupam duas.
+
+    ⚠ Espera texto JA PROTEGIDO e SEM quebras: ela desconta so os placeholders,
+    entao um `#Name[2]` cru vale 8 colunas e cada `\n` vale 1. Para medir uma
+    fala qualquer do pipeline, use `display_width`.
     """
     total = 0
     for ch in _PH_RE.sub("", text):
         total += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
     return total
+
+
+def display_width(text: str) -> int:
+    """
+    Colunas visiveis de um texto CRU: marcador e quebra nao contam.
+
+    E a forma segura de medir qualquer fala do pipeline - crua, quebrada ou nao.
+    Contar a quebra como coluna faria a mesma fala medir diferente antes e depois
+    do `wrap_text`, e uma fala ja encurtada voltaria a ser candidata so por ter
+    ganhado quebras.
+    """
+    if not text:
+        return 0
+    protegido = protect_tags(text)[0]
+    segmentos = _SPLIT_NEWLINE_RE.split(protegido)[::2]   # impares sao as quebras
+    return sum(visible_width(seg) for seg in segmentos)
+
+
+def piso_do_lote(originais: Iterable[str],
+                 percentil: int = PISO_PERCENTIL) -> int:
+    """
+    A largura que o jogo comprovadamente exibiu neste lote de falas.
+
+    O percentil alto, e nao o maximo, para nao deixar uma fala anomala (que no
+    jogo talvez ja cortasse) puxar o piso para cima sozinha.
+    """
+    larguras = sorted(display_width(t) for t in originais if t and t.strip())
+    if not larguras:
+        return 0
+    # posto mais proximo (ceil), nao truncamento: com `n * p // 100` o P90 de 10
+    # itens cai no indice 9, que e o MAXIMO - justo o outlier que o percentil
+    # existe para excluir
+    i = max(0, math.ceil(len(larguras) * percentil / 100) - 1)
+    return larguras[min(i, len(larguras) - 1)]
+
+
+def entry_budget(original: str, piso: int = 0, folga: float = FOLGA_DEFAULT,
+                 teto: int = 0) -> int:
+    """
+    Quantas colunas a traducao desta fala pode ocupar.
+
+    A medida sai do proprio original: o jogo ja o exibiu naquela caixa, entao ele
+    e a evidencia do que cabe - por fala, sem depender de medir a caixa.
+
+    ⚠ A premissa da funcao inteira: a largura do original e limite INFERIOR da
+    caixa, nao a caixa. `\u3048\uff1f` ocupa 4 colunas e isso nao quer dizer que a caixa
+    tenha 4 colunas - quer dizer que ela mostra pelo menos isso. Sem o `piso`,
+    toda fala curta viraria um orcamento minusculo e o encurtamento pioraria o
+    texto em vez de melhorar.
+
+    Devolve 0 quando o original nao calibra nada (vazio ou so marcadores); quem
+    chama le isso como "sem base, nao mexer".
+    """
+    largura = display_width(original)
+    if largura <= 0 and piso <= 0:
+        return 0
+    base = max(int(largura * (1.0 + folga)), piso)
+    if teto > 0:
+        base = min(base, teto)
+    return max(base, 0)
 
 
 def detect_newline(entries: Iterable["TextEntry"], forced: str | None = None) -> str:
