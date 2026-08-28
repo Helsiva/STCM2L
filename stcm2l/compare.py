@@ -55,6 +55,7 @@ class WordDiff:
     old: int
     new: int
     expected: bool            # bate com a relocacao logica do mesmo alvo
+    aterrissa: bool = False   # o valor NOVO cai sobre um endereco valido do injetado
     pi: int = -1              # indice do parametro (-1 = nao e parametro)
     wi: int = -1              # word dentro do parametro
 
@@ -108,7 +109,21 @@ class CompareReport:
 
     @property
     def suspects(self) -> list[WordDiff]:
-        return [w for w in self.words if not w.expected]
+        """Reescritos sem alvo logico E que nao caem em endereco valido nenhum."""
+        return [w for w in self.words if not w.expected and not w.aterrissa]
+
+    @property
+    def realinhados(self) -> list[WordDiff]:
+        """
+        Reescritos para um endereco VALIDO do injetado, so que o alvo logico nao
+        pode ser confirmado.
+
+        Acontece quando o elemento muda de segmentacao entre os dois arquivos -
+        o pool de strings da cauda re-segmenta quando o texto muda de tamanho, e
+        ai os indices de segmento nao correspondem mais. O ponteiro esta bom; o
+        que falhou foi a conferencia, nao a relocacao.
+        """
+        return [w for w in self.words if not w.expected and w.aterrissa]
 
     @property
     def relocations(self) -> list[WordDiff]:
@@ -281,6 +296,10 @@ def compare(original: Path, patched: Path) -> CompareReport:
     for w in rep.words:
         if w.opcode is not None and w.pi >= 0:
             relocados[(w.opcode, w.pi, w.wi)] += 1
+    enderecos_b = set(b.addr_map)
+    for w in rep.words:
+        if not w.expected:
+            w.aterrissa = w.new in enderecos_b
     rep.vereditos = {k: v.veredito for k, v in slot_verdicts(a).items()}
     rep.slots = sorted(
         (SlotStat(op, pi, wi, n, instancias[(op, pi, wi)])

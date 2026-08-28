@@ -120,14 +120,19 @@ def cmd_info(args: argparse.Namespace) -> int:
         for i, exemplo in enumerate(nfo.encoding_samples or []):
             if i == 0:
                 print("    mesma frase em cada codificacao:")
-            distintos, vistos = [], set()
+            distintos, vistos = [], {}
             for enc, txt in exemplo.items():
                 if txt in vistos:
+                    # a escolhida nunca some por deduplicacao: ela carrega as
+                    # outras que leem igual (texto ASCII le igual em todas)
+                    if enc == nfo.encoding:
+                        i_ant = vistos[txt]
+                        distintos[i_ant] = (f"{nfo.encoding} (={distintos[i_ant][0]})", txt)
                     continue
-                vistos.add(txt)
+                vistos[txt] = len(distintos)
                 distintos.append((enc, txt))
             for enc, txt in distintos:
-                marca = "->" if enc == nfo.encoding else "  "
+                marca = "->" if enc.startswith(nfo.encoding) else "  "
                 corte = txt if len(txt) <= 58 else txt[:58] + "..."
                 print(f"      {marca} {enc:<9} {corte!r}")
             if i < len(nfo.encoding_samples) - 1:
@@ -410,6 +415,8 @@ def cmd_compare(args: argparse.Namespace) -> int:
                     motivos.append(f"{len(rep.id_changes)} identificador")
                 if rep.suspects:
                     motivos.append(f"{len(rep.suspects)} suspeito")
+                if rep.realinhados:
+                    motivos.append(f"{len(rep.realinhados)} realinhado")
                 if rep.isolados:
                     motivos.append(f"{len(rep.isolados)} slot isolado")
                 print(f"[!!!!] {path.name}: {', '.join(motivos)}")
@@ -464,6 +471,11 @@ def cmd_compare(args: argparse.Namespace) -> int:
             for t in iso[:args.limit]:
                 print(f"           opcode 0x{t.opcode:X} param {t.pi} word {t.wi}: "
                       f"{t.relocados}/{t.instancias} instancias ({t.razao:.1%})")
+        real = rep.realinhados
+        if real:
+            print(f"       {len(real)} word(s) reescritos para endereco VALIDO do injetado, "
+                  f"mas o alvo logico nao pode ser conferido (o elemento re-segmentou). "
+                  f"O ponteiro esta bom; a conferencia e que nao alcanca.")
         sus = rep.suspects
         if sus:
             print(f"       ! {len(sus)} WORD(S) SUSPEITO(S) - reescritos sem alvo logico "
