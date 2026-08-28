@@ -407,11 +407,32 @@ def piso_do_lote(originais: Iterable[str],
     return larguras[min(i, len(larguras) - 1)]
 
 
-def originais_de_fala(entries: Iterable[Any]) -> list[str]:
-    """Os originais que sao FALA - a populacao certa para o percentil do piso."""
-    return [e.original for e in entries
-            if getattr(e, "original", "").strip()
-            and classify_text(e.original) != "id"]
+#: abaixo disto nao e fala em idioma nenhum - e fragmento que o parser recolheu
+#: (um traco, um '<', um '}'). Medir a caixa por eles afunda a distribuicao.
+MIN_COLUNAS_FALA = 4
+
+
+def originais_de_fala(entries: Iterable[Any],
+                      min_colunas: int = MIN_COLUNAS_FALA) -> list[str]:
+    """
+    Os originais que sao FALA - a populacao certa para medir a caixa.
+
+    Dois filtros, e os dois vieram de dado real:
+
+    1. **fragmento fora.** Num roteiro de 279 arquivos, 51056 "originais" eram
+       um caractere solto ('-', '<', '}'). Nao sao fala em idioma nenhum, e
+       entravam na conta arrastando a mediana para baixo.
+    2. **so o script dominante.** Sobrando japones e latim, vence o que tiver
+       mais falas: num jogo japones o latim restante e palavra de engine e nome
+       de recurso, e vice-versa. Assim a medida da caixa sai do texto que o jogo
+       realmente desenhou como dialogo, sem precisar declarar o idioma.
+    """
+    falas = [e.original for e in entries
+             if getattr(e, "original", "").strip()
+             and classify_text(e.original) != "id"
+             and display_width(e.original) >= min_colunas]
+    cjk = [t for t in falas if classify_text(t) == "cjk"]
+    return cjk if len(cjk) * 2 >= len(falas) else falas
 
 
 def entry_budget(original: str, piso: int = 0, folga: float = FOLGA_DEFAULT,

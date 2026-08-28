@@ -765,7 +765,7 @@ def cmd_shorten(args: argparse.Namespace) -> int:
             fala = perfil.get("cjk", 0) + perfil.get("prose", 0)
             print(f"\n  o que esta no campo 'original': {perfil.get('cjk', 0)} japones, "
                   f"{perfil.get('prose', 0)} prosa latina, {perfil.get('id', 0)} identificador")
-            if amostras_prosa:
+            if amostras_prosa and perfil.get("prose", 0) > (perfil.get("cjk", 0) or 1) * 0.3:
                 print("  exemplos do que caiu como prosa latina:")
                 for nome, t in amostras_prosa[:6]:
                     print(f"    {nome}: {t[:60]!r}")
@@ -773,6 +773,8 @@ def cmd_shorten(args: argparse.Namespace) -> int:
                       "ser re-extraido dos .DAT limpos.")
                 print("    -> se for ingles/nome de recurso, sempre esteve ai e nao ha "
                       "problema nenhum.")
+                print("    -> se for um caractere solto, e fragmento e ja fica de fora "
+                      "da medida da caixa.")
         if larguras:
             larguras.sort()
             pc = percentis(larguras)

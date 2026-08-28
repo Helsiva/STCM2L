@@ -600,7 +600,23 @@ def _check_shorten(tmpdir: Path, log) -> bool:
                             encoding="cp932", original="\u3042" * 30, translation="x")
                   for i in range(10)])
     from .textio import originais_de_fala
-    populacao_ok = (len(originais_de_fala(mistura)) == 10
+    # fragmento de um caractere ('-', '<', '}') nao e fala em idioma nenhum, e
+    # num roteiro real ele e MAIS numeroso que a fala: 51056 contra 61873
+    fragmentos = [TextEntry(id=f"C{i:05d}_S00", elem=i, seg=0, opcode=None,
+                            encoding="cp932", original=c, translation="x")
+                  for i, c in enumerate("\u2013<}\u2013<}\u2013<}\u2013" * 6)]
+    so_fala = originais_de_fala(mistura + fragmentos)
+    # e sobrando japones e latim, vence o script dominante
+    latim = [TextEntry(id=f"D{i:05d}_S00", elem=i, seg=0, opcode=None,
+                       encoding="cp932", original="Outside of the Castle",
+                       translation="x") for i in range(3)]
+    dominante_ok = (all(classify_text(t) == "cjk"
+                        for t in originais_de_fala(mistura + latim))
+                    # num corpus majoritariamente latino, o latim e que fica
+                    and any(classify_text(t) == "prose"
+                            for t in originais_de_fala(latim * 20 + mistura[90:])))
+    populacao_ok = (len(so_fala) == 10 and dominante_ok
+                    and len(originais_de_fala(mistura)) == 10
                     and piso_do_lote(originais_de_fala(mistura)) == 60
                     # sem o filtro, os 90 identificadores afundariam o piso
                     and piso_do_lote([e.original for e in mistura]) < 60)
