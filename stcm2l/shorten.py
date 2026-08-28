@@ -724,6 +724,22 @@ def geometria_dos_originais(entries: Iterable[TextEntry]) -> tuple[list[int], di
     return sorted(larguras), contagem
 
 
+def perfil_dos_originais(entries: Iterable[TextEntry]) -> dict[str, int]:
+    """
+    Que tipo de texto esta no campo `original`.
+
+    Num roteiro japones a esmagadora maioria tem que ser "cjk". Muita "prose"
+    ali e a assinatura de um .json contaminado - extraido de uma saida ja
+    injetada, ou lido na codificacao errada. Medir a caixa por originais assim
+    mede a coisa errada, e encurtar por eles gasta dinheiro a toa.
+    """
+    perfil = {"cjk": 0, "prose": 0, "id": 0}
+    for e in entries:
+        if getattr(e, "original", "").strip():
+            perfil[classify_text(e.original)] += 1
+    return perfil
+
+
 def percentis(valores: list[int]) -> dict[str, int]:
     """P50/P75/P90/P95/P99 e o maximo, para escolher o piso com dado e nao chute."""
     if not valores:

@@ -32,8 +32,8 @@ from .pipeline import (
 )
 from .shorten import (
     ESFORCO_PADRAO, PROVEDORES, ResumoEncurtamento, fazer_chamador,
-    geometria_dos_originais, larguras_dos_originais, percentis, piso_e_teto,
-    relatorio_seco, shorten_entries,
+    geometria_dos_originais, larguras_dos_originais, percentis,
+    perfil_dos_originais, piso_e_teto, relatorio_seco, shorten_entries,
 )
 from .textio import (
     FOLGA_DEFAULT, MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, PISO_PERCENTIL,
@@ -707,6 +707,7 @@ def cmd_shorten(args: argparse.Namespace) -> int:
         larguras: list[int] = []
         por_linha: list[int] = []
         linhas_orig: dict[int, int] = {}
+        perfil: dict[str, int] = {}
         faixas = ((10, "1-10 colunas"), (25, "11-25 colunas"),
                   (50, "26-50 colunas"), (10 ** 9, "50+ colunas"))
         for path in files:
@@ -716,6 +717,8 @@ def cmd_shorten(args: argparse.Namespace) -> int:
             piso, teto = piso_e_teto(entries, args.max_line, args.max_lines,
                                      args.percentil)
             larguras.extend(larguras_dos_originais(entries))
+            for k, v in perfil_dos_originais(entries).items():
+                perfil[k] = perfil.get(k, 0) + v
             lg, ct = geometria_dos_originais(entries)
             por_linha.extend(lg)
             for k, v in ct.items():
@@ -753,6 +756,15 @@ def cmd_shorten(args: argparse.Namespace) -> int:
                     dica = ("   <- barato, considere --width-tolerance"
                             if rotulo.startswith("1-10") else "")
                     print(f"    {rotulo:>14}: {deficit[rotulo]:>7}{dica}")
+        if perfil:
+            fala = perfil.get("cjk", 0) + perfil.get("prose", 0)
+            print(f"\n  o que esta no campo 'original': {perfil.get('cjk', 0)} japones, "
+                  f"{perfil.get('prose', 0)} prosa latina, {perfil.get('id', 0)} identificador")
+            if fala and perfil.get("prose", 0) > fala * 0.3:
+                print("  ⚠ prosa latina demais para um roteiro japones. Este .json parece "
+                      "CONTAMINADO (extraido de uma saida ja injetada, ou lido na "
+                      "codificacao errada) - a medida da caixa sai errada e o "
+                      "encurtamento gasta a toa. Re-extraia dos .DAT limpos.")
         if larguras:
             larguras.sort()
             pc = percentis(larguras)
