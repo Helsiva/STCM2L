@@ -22,7 +22,8 @@ from .core import (
 #: um trecho cru que comeca com um marcador conhecido e area de dados, nao codigo
 KNOWN_TAGS = (TAG_CODE_START, TAG_CODE_END, TAG_GLOBAL_DATA)
 from .textio import (
-    MAX_LINE_DEFAULT, TextEntry, classify_text, decode_block, detect_encoding,
+    MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, TextEntry, box_overflow, classify_text,
+    decode_block, detect_encoding,
     encoding_report,
     detect_newline, dump_entries, encode_text, load_entries, looks_like_text,
     wrap_text,
@@ -170,6 +171,9 @@ class InjectReport:
     skip_divergente: int = 0
     #: entradas cujo texto original nao bate com o bloco do .DAT
     divergentes: int = 0
+    #: falas que passam do numero de linhas da caixa (nao impede a injecao)
+    overflow_linhas: int = 0
+    pior_overflow_linhas: int = 0
     #: entradas recusadas por nao caber no bloco original (modo --fit)
     overflow: int = 0
     #: maior estouro visto, em bytes (para dimensionar o corte manual)
@@ -261,6 +265,7 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
                 strict_match: bool = False,
                 ignore_mismatch: bool = False,
                 max_line: int = MAX_LINE_DEFAULT,
+                max_lines: int = MAX_LINES_DEFAULT,
                 newline: str = "auto",
                 fit: bool = False,
                 allow_id_change: bool = False) -> InjectReport:
@@ -372,6 +377,17 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
         # so traducao passa pelo wrap - o texto original nunca e reescrito
         if max_line > 0 and entry.translation.strip():
             translation = wrap_text(translation, max_line, nl)
+            # a caixa do jogo corta o que passa do numero de linhas. Aqui so
+            # REPORTA: reescrever na injecao faria o .json deixar de descrever o
+            # que foi gravado, e e essa correspondencia que o compare confere.
+            sobra = box_overflow(translation, max_line, max_lines, nl)
+            if sobra:
+                report.overflow_linhas += 1
+                report.pior_overflow_linhas = max(report.pior_overflow_linhas, sobra)
+                report.problems.append(
+                    f"{entry.id}: passa {sobra} linha(s) da caixa "
+                    f"({max_lines} linhas de {max_line} colunas) - o jogo vai cortar. "
+                    f"Rode 'shorten' neste arquivo.")
 
         blob = encode_text(translation, encoding, fallback=fallback)
         old_lens = {db.raw_len, db.padded_len, len(db.content)}

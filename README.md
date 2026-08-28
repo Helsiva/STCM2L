@@ -183,7 +183,7 @@ e o resto vai com detecção automática. Você vê isso no log:
 --source JA: 412 textos sem kana/kanji vao com deteccao automatica
 ```
 
-### 5. O que sobrou sem traduzir
+### 6. O que sobrou sem traduzir
 
 ```powershell
 python stcm2l.py pending .\out -r --texts .\txt_ptbr -q
@@ -278,7 +278,59 @@ parâmetro que por acaso valha o tamanho antigo (um número de flag, um alvo de
 salto) é reescrito junto e o roteiro desanda. Ligue só se souber que o seu título
 precisa, e confira depois com o `compare`.
 
-### 4. Conferir o resultado
+### 4. Encurtar o que não cabe na caixa
+
+A caixa de texto do jogo aguenta um número fixo de **linhas**. O `--max-line` sempre
+respeitou a *largura*, mas até então nada contava quantas linhas saíam — uma fala que
+virava cinco linhas atravessava o pipeline inteiro e só aparecia cortada no jogo.
+Como português é mais comprido que japonês, isso não é caso isolado: é estrutural.
+
+```powershell
+# 1. quanto estoura, SEM chamar a API nem gastar nada
+python stcm2l.py shorten .\txt_ptbr -r --dry-run
+
+# 2. encurtar de verdade
+$env:GEMINI_API_KEY = "sua-chave"
+python stcm2l.py shorten .\txt_ptbr -o .\txt_curto -r --cache .\shorten-cache.json
+
+# 3. conferir que zerou
+python stcm2l.py shorten .\txt_curto -r --dry-run
+```
+
+O orçamento é `--max-line` × `--max-lines` (padrão 50 × 3), com folga: a quebra por
+palavra desperdiça o fim de cada linha, então o alvo declarado ao modelo é ~90% do
+produto — 135 colunas, não 150. Pedir 150 devolve texto que fecha na conta e estoura
+na quebra.
+
+**Duas passadas.** Primeiro *reescrever*: a mesma informação e a mesma voz do
+personagem, com menos palavras. O que continuar estourando vai para *resumir*, que pode
+descartar detalhe secundário. O que nem assim couber sai com `needs_review` e uma nota
+dizendo quanto falta — nada é truncado no meio da palavra.
+
+> **Quem mede se coube é a ferramenta, nunca o modelo.** Ele não conhece a regra de
+> quebra daqui. Toda resposta passa por `box_overflow` antes de ser aceita, e é essa
+> conferência que decide se a fala vai para a segunda passada.
+
+Marcadores (`#Name[2]`, `{var}`) viram placeholders antes de ir para o modelo e são
+recolocados na volta, igual ao `translate`. Se algum se perder, a entrada é marcada
+para revisão em vez de sair silenciosamente sem ele. Identificador nunca é encurtado.
+
+| flag | |
+|---|---|
+| `--dry-run` | só conta e lista; não chama a API nem grava |
+| `--ai-provider` | `gemini` (padrão, via `urllib`, sem dependência) ou `claude` (`pip install anthropic`) |
+| `--ai-model` | nome errado faz o comando **listar os disponíveis** em vez de você adivinhar |
+| `--cache` | re-rodar sai de graça; o orçamento entra na chave, então mudar a caixa re-encurta |
+| `--api-key` | ou as variáveis `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` |
+
+O `inject` também confere e **avisa** (nunca reescreve — isso faria o `.json` deixar de
+descrever o que foi gravado, e é essa correspondência que o `compare` verifica).
+
+> **Limite conhecido:** `wrap_text` nunca parte uma palavra, e japonês corrido não tem
+> espaço. Uma fala que continuou em japonês fica numa linha só, por mais larga que seja.
+> Isso vale para o que o `pending` lista como não traduzido, não para a saída em PT-BR.
+
+### 5. Conferir o resultado
 
 ```powershell
 python stcm2l.py verify .\out

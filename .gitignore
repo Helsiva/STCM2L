@@ -11,5 +11,9 @@ venv/
 /txt_ptbr/
 /scripts/
 cache.json
+*-cache.json
+# credencial nunca entra no repo
+.env
+*.key
 *.DAT
 *.BIN

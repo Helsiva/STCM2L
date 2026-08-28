@@ -24,6 +24,7 @@ from .core import (
 from .pipeline import collect_entries, inject_file, pendencias
 from .compare import compare
 from .textio import (
+    TextEntry,
     classify_text, detect_encoding, dump_entries, load_entries, protect_tags, wrap_text,
 )
 
@@ -548,6 +549,113 @@ def _check_fit(tmpdir: Path, log) -> bool:
     return bool(ok)
 
 
+def _check_shorten(tmpdir: Path, log) -> bool:
+    """Orcamento de caixa (largura x linhas) e a escalada de encurtamento."""
+    from .shorten import ResumoEncurtamento, candidatas, shorten_entries
+    from .textio import box_budget, box_overflow, line_count
+    ok = True
+
+    # -- [40] as primitivas de orcamento -------------------------------------
+    tres = "Linha um aqui\nLinha dois aqui\nLinha tres aqui"
+    cinco = "\n".join(f"Linha {i}" for i in range(5))
+    literal = "Linha um\\nLinha dois\\nLinha tres"
+    marcada = "#Name[2]" * 12 + "curto"       # 96 colunas de marcador, 5 de texto
+    # kana conta 2 colunas. Precisa de espaco entre os grupos: wrap_text nunca
+    # parte uma palavra, entao japones corrido (sem espaco) fica numa linha so
+    # por mais largo que seja - limite real, nao defeito do teste.
+    kana = " ".join("\u3042" * 10 for _ in range(6))   # 6 grupos de 20 colunas
+    conta_ok = (line_count(tres) == 3 and line_count(cinco) == 5
+                and line_count(literal) == 3 and line_count("") == 0)
+    box_ok = (box_overflow(tres, 50, 3) == 0
+              and box_overflow(cinco, 50, 3) == 2
+              and box_overflow(literal, 50, 3) == 0
+              # marcador nao ocupa coluna: nao pode empurrar linha
+              and box_overflow(marcada, 50, 3) == 0
+              # 6 grupos de 20 colunas nao cabem em 50: tem que quebrar
+              and line_count(wrap_text(kana, 50)) == 3
+              # e japones corrido nao quebra em lugar nenhum
+              and line_count(wrap_text("\u3042" * 40, 50)) == 1)
+    orc_ok = box_budget(50, 3) == 135 and box_budget(50, 0) == 0
+    log(f"[40] orcamento de caixa (linhas, marcadores, kana, alvo): "
+        f"{'OK' if conta_ok and box_ok and orc_ok else 'FALHOU'}")
+    if not (conta_ok and box_ok and orc_ok):
+        log(f"     conta={conta_ok} box={box_ok} orcamento={orc_ok} "
+            f"marcada={box_overflow(marcada, 50, 3)} kana={line_count(wrap_text(kana, 50))}")
+    ok &= conta_ok and box_ok and orc_ok
+
+    # -- [41] a escalada reescrever -> resumir --------------------------------
+    def _e(i, jp, pt):
+        return TextEntry(id=TextEntry.make_id(i, 0), elem=i, seg=0, opcode=None,
+                         encoding="cp932", original=jp, translation=pt)
+
+    gigante = ("Uma fala propositalmente enorme que nao cabe de jeito nenhum na caixa "
+               "do jogo porque tem muito mais texto do que tres linhas comportam, e "
+               "segue por mais um tanto so para garantir o estouro.")
+    media = ("Uma fala media que ainda passa das tres linhas mas nao por muito, "
+             "servindo para a primeira passada resolver sozinha o caso dela aqui "
+             "sem precisar de resumo nenhum.")
+    ents = [
+        _e(1, "\u306a\u3093\u3067", gigante),          # so o resumo resolve
+        _e(2, "\u3082\u3046", media),                  # a reescrita resolve
+        _e(3, "\u3042\u3042", "Fala curta."),           # nem entra
+        _e(4, "SYSTEM_GLOBAL", gigante),                # identificador: nunca entra
+    ]
+    alvos = candidatas(ents, 50, 3)
+    sel_ok = {e.id for e in alvos} == {ents[0].id, ents[1].id}
+
+    chamadas: list[tuple[bool, int]] = []
+
+    def falso(textos, orcamentos, resumir):
+        chamadas.append((resumir, len(textos)))
+        saida = []
+        for t in textos:
+            if resumir:
+                saida.append("Versao curta.")
+            elif t.startswith("Uma fala media"):
+                saida.append("Versao media que agora cabe direitinho na caixa.")
+            else:
+                saida.append(t)          # a reescrita nao resolveu esta
+        return saida
+
+    rep = shorten_entries(ents, falso, max_line=50, max_lines=3, log=lambda m: None)
+    passadas_ok = (len(chamadas) == 2 and chamadas[0] == (False, 2)
+                   and chamadas[1] == (True, 1))
+    # so os alvos: o identificador foi excluido de proposito e continua estourando
+    cabe_ok = all(box_overflow(e.translation, 50, 3) == 0 for e in ents[:3])
+    conta_rep = (rep.candidatas == 2 and rep.resolvidas_1 == 1
+                 and rep.resolvidas_2 == 1 and rep.restantes == 0)
+    intocado = ents[3].translation == gigante        # identificador ficou como estava
+    e41 = sel_ok and passadas_ok and cabe_ok and conta_rep and intocado
+    log(f"[41] escalada: 1a passada com {chamadas[0][1] if chamadas else '?'} falas, "
+        f"2a so com o que sobrou; identificador intocado: {'OK' if e41 else 'FALHOU'}")
+    if not e41:
+        log(f"     selecao={sel_ok} passadas={chamadas} cabe={cabe_ok} "
+            f"resumo=({rep.candidatas},{rep.resolvidas_1},{rep.resolvidas_2},{rep.restantes}) "
+            f"id_intocado={intocado}")
+    ok &= e41
+
+    # -- [42] marcadores perdidos e o que nunca cabe --------------------------
+    com_tag = "#Name[2]" + gigante
+    ents2 = [_e(5, "\u306a\u3093\u3067", com_tag)]
+
+    def perde_tudo(textos, orcamentos, resumir):
+        # devolve sem os placeholders E ainda grande: os dois defeitos de uma vez
+        return [gigante for _ in textos]
+
+    rep2 = shorten_entries(ents2, perde_tudo, max_line=50, max_lines=3, log=lambda m: None)
+    e = ents2[0]
+    e42 = (e.needs_review and rep2.restantes == 1
+           and "#Name[2]" in e.translation          # restore_tags reanexou a perdida
+           and any("encurte a mao" in n for n in e.notes))
+    log(f"[42] marcador perdido e fala que nunca cabe viram needs_review: "
+        f"{'OK' if e42 else 'FALHOU'}")
+    if not e42:
+        log(f"     revisar={e.needs_review} restantes={rep2.restantes} "
+            f"notes={e.notes} texto={e.translation[:60]!r}")
+    ok &= e42
+    return bool(ok)
+
+
 def run(verbose: bool = True) -> bool:
     log = print if verbose else (lambda *a, **k: None)
     ok = True
@@ -781,6 +889,10 @@ def run(verbose: bool = True) -> bool:
         # 10) modo --fit (layout intacto) e o comando compare
         log("\n=== modo --fit e compare ===")
         ok &= _check_fit(tmpdir, log)
+
+        # 11) orcamento de caixa e encurtamento (sem rede: modelo injetado)
+        log("\n=== caixa de texto e encurtamento ===")
+        ok &= _check_shorten(tmpdir, log)
 
     log("\n" + ("TODOS OS TESTES PASSARAM" if ok else "HOUVE FALHAS - veja acima"))
     return bool(ok)

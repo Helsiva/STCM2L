@@ -292,10 +292,55 @@ NEWLINE_LITERAL = "\\n"    # barra-invertida + n, lidos pela engine
 #: limite padrao de largura da caixa de texto, em colunas
 MAX_LINE_DEFAULT = 50
 
+#: quantas linhas a caixa de texto do jogo aguenta antes de cortar o resto
+MAX_LINES_DEFAULT = 3
+
+#: A quebra por palavra desperdica o fim de cada linha - quase nunca a ultima
+#: palavra termina exatamente na coluna limite. Pedir `max_line * max_lines` a
+#: um tradutor ou a um modelo devolve texto que fecha na conta e estoura na
+#: quebra, entao o alvo declarado e uma fracao disso.
+BUDGET_SLACK = 0.9
+
 #: quebras ja presentes no texto (o grupo captura para preservar a forma original)
 _SPLIT_NEWLINE_RE = re.compile(r"(\\n|\r\n|\n|\r)")
 
 _ESPACOS_RE = re.compile(r"(\s+)")
+
+
+def line_count(text: str) -> int:
+    """
+    Quantas linhas o texto ocupa, contando as duas formas de quebra.
+
+    `_SPLIT_NEWLINE_RE` tem grupo capturante, entao o split devolve
+    [linha, quebra, linha, quebra, linha]: os separadores caem nos indices
+    impares e o numero de linhas e o de posicoes pares.
+    """
+    if not text:
+        return 0
+    return (len(_SPLIT_NEWLINE_RE.split(text)) + 1) // 2
+
+
+def box_budget(max_line: int = MAX_LINE_DEFAULT,
+               max_lines: int = MAX_LINES_DEFAULT) -> int:
+    """Alvo em colunas visiveis para uma fala caber na caixa. Ver BUDGET_SLACK."""
+    if max_line <= 0 or max_lines <= 0:
+        return 0
+    return max(1, int(max_line * max_lines * BUDGET_SLACK))
+
+
+def box_overflow(text: str, max_line: int = MAX_LINE_DEFAULT,
+                 max_lines: int = MAX_LINES_DEFAULT,
+                 newline: str = NEWLINE_LF) -> int:
+    """
+    Quantas linhas ALEM do limite a fala ocupa depois de quebrada. 0 = cabe.
+
+    Mede o texto ja quebrado, nao o cru: e a quebra que decide quantas linhas
+    saem. Como `wrap_text` e idempotente, chamar aqui e seguro mesmo em texto
+    que ja veio quebrado.
+    """
+    if max_lines <= 0 or not text.strip():
+        return 0
+    return max(0, line_count(wrap_text(text, max_line, newline)) - max_lines)
 
 
 def visible_width(text: str) -> int:

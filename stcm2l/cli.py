@@ -18,6 +18,7 @@ pasta (processamento em lote).
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -29,7 +30,13 @@ from .pipeline import (
     DAT_SUFFIXES, Pendencia, extract_file, inject_file, inspect, iter_inputs,
     pendencias, verify_file,
 )
-from .textio import MAX_LINE_DEFAULT, dump_entries, load_entries
+from .shorten import (
+    ESFORCO_PADRAO, PROVEDORES, ResumoEncurtamento, fazer_chamador,
+    relatorio_seco, shorten_entries,
+)
+from .textio import (
+    MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, box_budget, dump_entries, load_entries,
+)
 from .translate import TranslationError, translate_entries
 
 TEXT_SUFFIXES = (".json", ".txt")
@@ -265,6 +272,7 @@ def cmd_inject(args: argparse.Namespace) -> int:
     fails = 0
     applied = 0
     overflow = 0
+    overflow_linhas = 0
     id_changes = 0
     divergentes = 0
     for path in files:
@@ -284,7 +292,8 @@ def cmd_inject(args: argparse.Namespace) -> int:
                 fallback=args.fallback, relocate=args.relocate,
                 fix_len_params=args.fix_len and not args.no_fix_len,
                 strict_match=args.strict, ignore_mismatch=args.ignore_mismatch,
-                max_line=args.max_line, newline=args.newline,
+                max_line=args.max_line, max_lines=args.max_lines,
+                newline=args.newline,
                 fit=args.fit, allow_id_change=args.allow_id_change,
             )
         except (Stcm2lError, UnicodeEncodeError) as exc:
@@ -296,6 +305,7 @@ def cmd_inject(args: argparse.Namespace) -> int:
             continue
         applied += rep.applied
         overflow += rep.overflow
+        overflow_linhas += rep.overflow_linhas
         divergentes += rep.divergentes
         id_changes += rep.id_changes
         extra = ""
@@ -303,6 +313,8 @@ def cmd_inject(args: argparse.Namespace) -> int:
             extra += f", {rep.overflow} NAO couberam"
         if rep.id_changes:
             extra += f", {rep.id_changes} identificadores"
+        if rep.overflow_linhas:
+            extra += f", {rep.overflow_linhas} passam da caixa"
         if args.fit:
             extra += "  [layout preservado]" if rep.layout_preserved else "  [LAYOUT MUDOU!]"
         print(f"[ OK ] {path.name}: {rep.applied} textos, {rep.skipped} pulados{extra} -> {target}")
@@ -333,6 +345,9 @@ def cmd_inject(args: argparse.Namespace) -> int:
         print(f"{id_changes} identificador(es) tiveram traducao recusada - o jogo procura voz, "
               f"trilha e o proximo script por esse nome. Reveja o .json e apague a traducao "
               f"dessas entradas.")
+    if overflow_linhas:
+        print(f"{overflow_linhas} fala(s) passam das {args.max_lines} linhas da caixa e o "
+              f"jogo vai cortar na tela. Rode 'stcm2l shorten' nos .json antes de injetar.")
     if overflow:
         print(f"{overflow} fala(s) nao couberam no bloco original e ficaram em japones. "
               f"Encurte a traducao dessas entradas e rode de novo.")
@@ -669,6 +684,93 @@ def cmd_pending(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_shorten(args: argparse.Namespace) -> int:
+    """Encurta o que nao cabe na caixa de texto do jogo."""
+    src = Path(args.input)
+    files = iter_inputs(src, args.recursive, TEXT_SUFFIXES)
+    if not files:
+        print("nenhum arquivo de texto (.json/.txt) encontrado.")
+        return 1
+    batch = src.is_dir()
+
+    # --dry-run nao chama a API: primeiro se mede o gasto, depois se gasta
+    if args.dry_run:
+        total = 0
+        for path in files:
+            entries, _ = load_entries(path)
+            pend = relatorio_seco(entries, args.max_line, args.max_lines, args.newline)
+            total += len(pend)
+            if pend:
+                pior = max(n for _, n, _ in pend)
+                print(f"[{len(pend):>5}] {path.name}  (a maior tem {pior} linhas)")
+                for e, linhas, colunas in pend[:args.limit]:
+                    print(f"        [{e.id}] {linhas} linhas / {colunas} colunas: "
+                          f"{e.translation[:60]!r}")
+        orc = box_budget(args.max_line, args.max_lines)
+        print(f"\n{total} falas estouram {args.max_lines} linhas de {args.max_line} "
+              f"colunas (alvo: {orc} colunas visiveis).")
+        if total:
+            print(f"Rode sem --dry-run para encurtar. Estimativa: ~{total // 25 + 1} "
+                  f"requisicoes em lotes de 25.")
+        return 0
+
+    if not args.output:
+        print("faltou -o/--output (ou use --dry-run, que nao grava nada).")
+        return 2
+    out = Path(args.output)
+    if batch:
+        out.mkdir(parents=True, exist_ok=True)
+
+    api_key = args.api_key or os.environ.get(
+        "GEMINI_API_KEY" if args.ai_provider == "gemini" else "ANTHROPIC_API_KEY")
+    try:
+        chamar = fazer_chamador(args.ai_provider, args.ai_model, api_key, args.ai_effort)
+    except Stcm2lError as exc:
+        print(f"ERRO: {exc}")
+        return 2
+
+    total = ResumoEncurtamento()
+    cache = Path(args.cache) if args.cache else None
+    for path in files:
+        entries, meta = load_entries(path)
+        print(f"\n-> {path.name}")
+        try:
+            rep = shorten_entries(
+                entries, chamar, max_line=args.max_line, max_lines=args.max_lines,
+                newline=args.newline, batch_size=args.batch_size,
+                retries=args.retries, cache_path=cache,
+                log=lambda m: print(m),
+            )
+        except Stcm2lError as exc:
+            print(f"   ERRO: {exc}")
+            return 2
+        target = _out_for(path, out, path.suffix, batch, src if batch else None)
+        fmt = "json" if target.suffix.lower() == ".json" else "txt"
+        dump_entries(entries, target, meta.get("source", path.stem),
+                     meta.get("encoding", "utf-8"), fmt)
+        print(f"   {rep.candidatas} estouravam -> {rep.resolvidas} resolvidas "
+              f"({rep.resolvidas_2} precisaram de resumo), {rep.restantes} para revisar"
+              + (f", {rep.do_cache} do cache" if rep.do_cache else "")
+              + f" -> {target}")
+        for eid, antes, depois, la, ld in rep.exemplos[:args.limit]:
+            print(f"     [{eid}] {la} -> {ld} linhas")
+            print(f"       antes : {antes[:70]!r}")
+            print(f"       depois: {depois.replace(chr(10), ' / ')[:70]!r}")
+        for campo in ("candidatas", "resolvidas_1", "resolvidas_2", "restantes",
+                      "marcadores_perdidos", "do_cache"):
+            setattr(total, campo, getattr(total, campo) + getattr(rep, campo))
+
+    print(f"\n{total.resolvidas}/{total.candidatas} falas passaram a caber em "
+          f"{args.max_lines} linhas.")
+    if total.restantes:
+        print(f"{total.restantes} continuam estourando e sairam com needs_review - "
+              f"encurte essas a mao no .json.")
+    if total.marcadores_perdidos:
+        print(f"{total.marcadores_perdidos} perderam marcadores no caminho e foram "
+              f"marcadas para revisao.")
+    return 0
+
+
 def cmd_selftest(args: argparse.Namespace) -> int:
     from .selftest import run
     return 0 if run() else 1
@@ -707,6 +809,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"quebra a fala traduzida a cada N colunas visiveis "
                              f"para caber na caixa de texto (padrao: {MAX_LINE_DEFAULT}; "
                              f"0 desliga)")
+        sp.add_argument("--max-lines", type=int, default=MAX_LINES_DEFAULT, metavar="N",
+                        help="quantas linhas a caixa de texto do jogo aguenta (0 desliga a "
+                             "conferencia). Estourar isso corta a fala na tela.")
         sp.add_argument("--newline", choices=("auto", "lf", "literal"), default="auto",
                         help="forma da quebra: 'lf' = byte 0x0A, 'literal' = a "
                              "sequencia \\n. Padrao 'auto': deduz do texto original "
@@ -832,6 +937,27 @@ def build_parser() -> argparse.ArgumentParser:
                          "lote no fim. Para varrer uma arvore inteira sem afogar o terminal.")
     common(sp)
     sp.set_defaults(func=cmd_compare)
+
+    sp = sub.add_parser("shorten", help="encurta com IA a fala que nao cabe na caixa")
+    sp.add_argument("input", help="arquivo .json/.txt traduzido ou pasta com eles")
+    sp.add_argument("-o", "--output", help="arquivo ou pasta de saida (nao precisa com --dry-run)")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="so conta o que estoura, sem chamar a API nem gravar. Rode isto "
+                         "primeiro: dimensiona o gasto antes de gastar.")
+    sp.add_argument("--ai-provider", choices=PROVEDORES, default="gemini")
+    sp.add_argument("--ai-model", help="nome do modelo (padrao: o do provedor). Nome errado "
+                                       "faz o comando listar os disponiveis.")
+    sp.add_argument("--ai-effort", default=ESFORCO_PADRAO,
+                    help="esforco do modelo (so no provedor claude)")
+    sp.add_argument("--api-key", help="credencial. Sem isto, sai de GEMINI_API_KEY / "
+                                      "ANTHROPIC_API_KEY do ambiente.")
+    sp.add_argument("--batch-size", type=int, default=25, help="falas por requisicao")
+    sp.add_argument("--retries", type=int, default=3)
+    sp.add_argument("--cache", help="arquivo .json de cache (re-rodar sai de graca)")
+    sp.add_argument("--limit", type=int, default=5, help="exemplos mostrados por arquivo")
+    sp.add_argument("-r", "--recursive", action="store_true")
+    quebra(sp)
+    sp.set_defaults(func=cmd_shorten)
 
     sp = sub.add_parser("pending", help="o que sobrou sem traduzir no .DAT injetado, e por que")
     sp.add_argument("input", help="arquivo .DAT INJETADO ou pasta com a saida do inject")
