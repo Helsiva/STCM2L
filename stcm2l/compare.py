@@ -113,7 +113,21 @@ def compare(original: Path, patched: Path) -> CompareReport:
     rep = CompareReport(original=original, patched=patched,
                         size_a=len(da), size_b=len(db_),
                         elems_a=len(a.elements), elems_b=len(b.elements))
+    # o injetado e MISTO: fala traduzida em utf-8 convivendo com o japones que
+    # nao foi tocado. Uma codificacao so nao le os dois lados, entao cada bloco
+    # e tentado na codificacao do proprio arquivo e depois na do outro.
     rep.encoding = detect_encoding(a)
+    encodings = [rep.encoding]
+    for enc in (detect_encoding(b), "utf-8", "cp932"):
+        if enc not in encodings:
+            encodings.append(enc)
+
+    def _texto(raw: bytes) -> str:
+        for enc in encodings:
+            txt = decode_block(raw, enc)
+            if txt is not None:
+                return txt
+        return raw.decode(encodings[0], "replace")
 
     if len(a.elements) != len(b.elements):
         rep.structural.append(
@@ -155,10 +169,7 @@ def compare(original: Path, patched: Path) -> CompareReport:
         for si, (sa, sb) in enumerate(zip(ea.segments, eb.segments)):
             if isinstance(sa, DataBlock) and isinstance(sb, DataBlock):
                 if sa.content != sb.content:
-                    told = decode_block(sa.content, rep.encoding)
-                    tnew = decode_block(sb.content, rep.encoding)
-                    told = told if told is not None else sa.content.decode(rep.encoding, "replace")
-                    tnew = tnew if tnew is not None else sb.content.decode(rep.encoding, "replace")
+                    told, tnew = _texto(sa.content), _texto(sb.content)
                     rep.texts.append(TextDiff(
                         elem=i, seg=si, kind=classify_text(told),
                         old=told, new=tnew,

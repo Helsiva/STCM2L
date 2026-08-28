@@ -307,6 +307,33 @@ def _check_fit(tmpdir: Path, log) -> bool:
     log(f"[29] fit no layout classic (sobra vira espaco): "
         f"{'OK' if classic_ok else 'FALHOU'} - {ctextos}")
     ok &= classic_ok
+
+    # -- .DAT em cp932 gravado em utf-8: ler o original com a codificacao de
+    #    SAIDA fazia o texto "mudar" sem ter mudado e disparava o aviso de
+    #    divergencia aos milhares. Ler e gravar sao codificacoes diferentes.
+    # '\u51dc\u3000' em cp932 sao os bytes EA A3 81 40, que TAMBEM sao utf-8
+    # valido e leem como '\ua8c1@'. E o caso real: o bloco decodifica nas duas
+    # codificacoes, com resultados diferentes, entao ler com a errada nao falha
+    # - so mente.
+    ambiguo = "\u51dc\u3000"
+    assert ambiguo.encode("cp932").decode("utf-8") != ambiguo
+    ddat = tmpdir / "enc.DAT"
+    ddat.write_bytes(make_otome_sample([ambiguo] + inline, pool))
+    dscript = parse(ddat.read_bytes())
+    dentries = collect_entries(dscript, "cp932")
+    for e in dentries:
+        e.translation = "" if classify_text(e.original) == "id" else "Tudo bem por aqui."
+    dtexts = tmpdir / "enc.json"
+    dump_entries(dentries, dtexts, ddat.name, "cp932", "json")
+    dout = tmpdir / "out" / "enc.DAT"
+    drep = inject_file(ddat, dtexts, dout, out_encoding="utf-8")
+    falsos = [m for m in drep.problems if "divergente" in m]
+    enc_ok = not falsos
+    log(f"[30] cp932 lido como cp932 mesmo gravando utf-8 "
+        f"(0 divergencias falsas): {'OK' if enc_ok else 'FALHOU'}")
+    for m in falsos[:3]:
+        log(f"     ! {m}")
+    ok &= enc_ok
     return bool(ok)
 
 

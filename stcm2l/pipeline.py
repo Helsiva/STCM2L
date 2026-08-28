@@ -155,12 +155,17 @@ class InjectReport:
     skipped: int = 0
     grown: int = 0
     length_params_fixed: int = 0
+    #: por que cada entrada foi pulada - "0 aplicados" sem isso nao diz nada
+    skip_sem_traducao: int = 0
+    skip_igual: int = 0
+    skip_alvo: int = 0
     #: entradas recusadas por nao caber no bloco original (modo --fit)
     overflow: int = 0
     #: maior estouro visto, em bytes (para dimensionar o corte manual)
     worst_overflow: int = 0
     #: identificadores que a traducao alterou (o jogo procura o recurso por nome)
     id_changes: int = 0
+    skip_id: int = 0
     #: True quando a saida tem exatamente o mesmo layout do original
     layout_preserved: bool = False
     problems: list[str] = None  # type: ignore[assignment]
@@ -218,7 +223,12 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
     data = dat_path.read_bytes()
     script = parse(data)
     entries, meta = load_entries(texts_path)
-    encoding = out_encoding or meta.get("encoding") or detect_encoding(script)
+    # LER e GRAVAR sao codificacoes diferentes e nao podem ser a mesma variavel.
+    # O .DAT japones esta em cp932; a traducao PT-BR sai em utf-8. Decodificar o
+    # bloco original com a codificacao de SAIDA faz o texto do .DAT "mudar" sem
+    # ter mudado - e o aviso de divergencia dispara aos milhares, por engano.
+    src_encoding = meta.get("encoding") or detect_encoding(script)
+    encoding = out_encoding or src_encoding
     nl = detect_newline(entries, None if newline == "auto" else newline)
     report = InjectReport(source=dat_path, output=out_path)
 
@@ -226,28 +236,36 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
         translation = entry.final
         if not translation:
             report.skipped += 1
+            report.skip_sem_traducao += 1
             continue
         if not (0 <= entry.elem < len(script.elements)):
             report.problems.append(f"{entry.id}: elemento {entry.elem} fora do arquivo")
             report.skipped += 1
+            report.skip_alvo += 1
             continue
         el = script.elements[entry.elem]
         if not (0 <= entry.seg < len(el.segments)) or not isinstance(el.segments[entry.seg], DataBlock):
             report.problems.append(f"{entry.id}: segmento {entry.seg} nao e um bloco de dado")
             report.skipped += 1
+            report.skip_alvo += 1
             continue
 
         db: DataBlock = el.segments[entry.seg]
-        current = decode_block(db.content, encoding)
+        current = decode_block(db.content, src_encoding)
         if entry.original and current is not None and current != entry.original:
-            msg = (f"{entry.id}: texto original divergente "
-                   f"(.DAT != arquivo de traducao) - o .DAT mudou desde a extracao?")
+            def _corta(t: str, n: int = 60) -> str:
+                t = t.replace("\n", "\\n")
+                return t if len(t) <= n else t[:n] + "..."
+            msg = (f"{entry.id}: texto original divergente - "
+                   f"no .DAT esta {_corta(current)!r}, "
+                   f"no arquivo de traducao {_corta(entry.original)!r}")
             if strict_match:
                 raise Stcm2lError(msg)
             report.problems.append(msg)
 
         if translation == entry.original:
             report.skipped += 1
+            report.skip_igual += 1
             continue
 
         # identificador alterado: o jogo procura voz, trilha e o PROXIMO SCRIPT
@@ -262,6 +280,7 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
             )
             if not allow_id_change:
                 report.skipped += 1
+                report.skip_id += 1
                 continue
 
         # so traducao passa pelo wrap - o texto original nunca e reescrito

@@ -276,6 +276,18 @@ def cmd_inject(args: argparse.Namespace) -> int:
         if args.fit:
             extra += "  [layout preservado]" if rep.layout_preserved else "  [LAYOUT MUDOU!]"
         print(f"[ OK ] {path.name}: {rep.applied} textos, {rep.skipped} pulados{extra} -> {target}")
+        motivos = [
+            (rep.skip_sem_traducao, "sem traducao no arquivo de texto (campo 'translation' vazio)"),
+            (rep.skip_igual, "traducao identica ao original"),
+            (rep.skip_id, "identificador (traducao recusada)"),
+            (rep.overflow, "nao coube no bloco original (--fit)"),
+            (rep.skip_alvo, "alvo invalido (elemento/segmento nao existe no .DAT)"),
+        ]
+        if rep.applied == 0 and rep.skipped:
+            print(f"       NADA foi injetado neste arquivo. Motivo dos {rep.skipped} pulados:")
+        for n, motivo in motivos:
+            if n:
+                print(f"         {n:>5}  {motivo}")
         for p in rep.problems[:args.limit]:
             print(f"       ! {p}")
         if len(rep.problems) > args.limit:
@@ -289,6 +301,10 @@ def cmd_inject(args: argparse.Namespace) -> int:
     if overflow:
         print(f"{overflow} fala(s) nao couberam no bloco original e ficaram em japones. "
               f"Encurte a traducao dessas entradas e rode de novo.")
+    if applied == 0:
+        print("NENHUM texto foi injetado: a saida e uma copia do original. Se todos os "
+              "pulados foram 'sem traducao', o --texts esta apontando para os .json "
+              "EXTRAIDOS em vez dos TRADUZIDOS (a saida do 'translate').")
     return 1 if fails else 0
 
 
