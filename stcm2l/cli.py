@@ -33,8 +33,8 @@ from .pipeline import (
 from .shorten import (
     ESFORCO_PADRAO, PROVEDORES, ResumoEncurtamento, fazer_chamador,
     geometria_dos_originais, larguras_dos_originais, percentis,
-    amostra_de_prosa, perfil_dos_originais, piso_e_teto, relatorio_seco,
-    shorten_entries,
+    CotaEsgotada, amostra_de_prosa, perfil_dos_originais, piso_e_teto,
+    relatorio_seco, shorten_entries,
 )
 from .textio import (
     FOLGA_DEFAULT, MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, PISO_PERCENTIL,
@@ -837,6 +837,7 @@ def cmd_shorten(args: argparse.Namespace) -> int:
         return 2
 
     total = ResumoEncurtamento()
+    rep_parcial = {"n": 0}
     cache = Path(args.cache) if args.cache else None
     for path in files:
         entries, meta = load_entries(path)
@@ -851,6 +852,20 @@ def cmd_shorten(args: argparse.Namespace) -> int:
                 piso_fixo=args.width_floor, cache_path=cache,
                 log=lambda m: print(m),
             )
+        except CotaEsgotada as exc:
+            print(f"   {exc}")
+            feitas = total.resolvidas + rep_parcial["n"]
+            print(f"\n   PAROU AQUI, mas nada se perdeu: o que ja foi encurtado esta "
+                  f"em {cache if cache else '(nenhum --cache!)'}.")
+            if cache:
+                print(f"   Quando a cota voltar, repita o MESMO comando: as falas ja "
+                      f"resolvidas saem do cache de graca e ele continua de onde parou.")
+            else:
+                print(f"   ⚠ Sem --cache este trabalho foi perdido. Use --cache na "
+                      f"proxima vez.")
+            print(f"   Para caber em menos requisicoes: --batch-size 100 (mesmas falas, "
+                  f"1/4 das chamadas) ou --width-tolerance 10 (menos falas).")
+            return 3
         except Stcm2lError as exc:
             print(f"   ERRO: {exc}")
             return 2

@@ -73,6 +73,17 @@ Chamador = Callable[[list[str], list[int], bool], list[str]]
 Alvo = tuple[str, int]
 
 
+class CotaEsgotada(TranslationError):
+    """
+    A credencial bateu no limite. Nao e erro do usuario nem bug - e so parar.
+
+    Vale um tipo proprio porque a saida e diferente das outras falhas: o que ja
+    foi encurtado esta no cache, entao a acao certa e repetir o MESMO comando
+    quando a cota voltar, e nao investigar nada.
+    """
+    fatal = True
+
+
 # ---------------------------------------------------------------------------
 # Provedor: Claude
 # ---------------------------------------------------------------------------
@@ -434,6 +445,10 @@ def _com_retry(chamar: Chamador, textos: list[str], orcamentos: list[int],
                     raise TranslationError(
                         f"{exc}\n\nEste modelo esta congestionado. Tente outro com "
                         f"--ai-model (ex.: gemini-3.1-flash-lite), ou repita mais tarde."
+                    ) from exc
+                if "429" in str(exc) or "quota" in str(exc).lower():
+                    raise CotaEsgotada(
+                        f"{exc}\n\nA cota da credencial acabou."
                     ) from exc
                 raise
             espera = delay * tentativa
