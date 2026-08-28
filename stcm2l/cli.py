@@ -730,7 +730,8 @@ def cmd_shorten(args: argparse.Namespace) -> int:
                 linhas_orig[k] = linhas_orig.get(k, 0) + v
             pend = relatorio_seco(entries, args.max_line, args.max_lines,
                                   args.newline, args.width_slack, args.percentil,
-                                  args.width_tolerance, not args.no_original_budget)
+                                  args.width_tolerance, not args.no_original_budget,
+                                  args.width_floor)
             total += len(pend)
             if pend:
                 pisos.append((path.name, piso, teto))
@@ -838,7 +839,8 @@ def cmd_shorten(args: argparse.Namespace) -> int:
                 newline=args.newline, batch_size=args.batch_size,
                 retries=args.retries, folga=args.width_slack,
                 percentil=args.percentil, tolerancia=args.width_tolerance,
-                usar_original=not args.no_original_budget, cache_path=cache,
+                usar_original=not args.no_original_budget,
+                piso_fixo=args.width_floor, cache_path=cache,
                 log=lambda m: print(m),
             )
         except Stcm2lError as exc:
@@ -1109,6 +1111,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help=f"percentil das larguras dos originais usado como PISO do "
                          f"orcamento (padrao {PISO_PERCENTIL}). Original curto nao prova "
                          f"caixa estreita, so que a caixa mostra pelo menos aquilo.")
+    sp.add_argument("--width-floor", type=int, default=0, metavar="N",
+                    help="fixa o piso do orcamento em N colunas, ignorando o percentil. "
+                         "A caixa e do JOGO, nao do arquivo: o maximo de um arquivo so "
+                         "diz que aquela cena nunca precisou de mais. Use o 'max' que o "
+                         "--dry-run mostra para o corpus inteiro.")
     sp.add_argument("--width-tolerance", type=int, default=0, metavar="N",
                     help="nao vira candidata por menos de N colunas de estouro. Evita "
                          "pagar uma requisicao para cortar 3 colunas.")

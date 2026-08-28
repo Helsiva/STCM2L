@@ -461,7 +461,8 @@ def candidatas_orcadas(entries: Iterable[TextEntry],
                        newline: str = "auto", folga: float = FOLGA_DEFAULT,
                        percentil: int = PISO_PERCENTIL,
                        tolerancia: int = 0,
-                       usar_original: bool = True) -> list[tuple[TextEntry, int]]:
+                       usar_original: bool = True,
+                       piso_fixo: int = 0) -> list[tuple[TextEntry, int]]:
     """
     As entradas que estouram - por LARGURA ou por LINHAS - com o orcamento de cada.
 
@@ -472,7 +473,13 @@ def candidatas_orcadas(entries: Iterable[TextEntry],
     itens = list(entries)
     nl = detect_newline(itens, None if newline == "auto" else newline)
     teto = box_budget(max_line, max_lines)
-    piso = piso_do_lote(originais_de_fala(itens), percentil) if usar_original else 0
+    # A caixa e do JOGO, nao do arquivo: o maximo de um arquivo so diz que
+    # aquela cena nunca precisou de mais. `piso_fixo` deixa fixar o numero
+    # medido no corpus inteiro, que e a estimativa certa da capacidade.
+    if piso_fixo > 0:
+        piso = piso_fixo
+    else:
+        piso = piso_do_lote(originais_de_fala(itens), percentil) if usar_original else 0
 
     out: list[tuple[TextEntry, int]] = []
     for e in itens:
@@ -502,6 +509,7 @@ def shorten_entries(entries: list[TextEntry], chamar_modelo: Chamador, *,
                     folga: float = FOLGA_DEFAULT,
                     percentil: int = PISO_PERCENTIL,
                     tolerancia: int = 0, usar_original: bool = True,
+                    piso_fixo: int = 0,
                     cache_path: Path | None = None,
                     log: Callable[[str], None] = print) -> ResumoEncurtamento:
     """
@@ -513,7 +521,8 @@ def shorten_entries(entries: list[TextEntry], chamar_modelo: Chamador, *,
     rep = ResumoEncurtamento()
     nl = detect_newline(entries, None if newline == "auto" else newline)
     alvos = candidatas_orcadas(entries, max_line, max_lines, newline,
-                               folga, percentil, tolerancia, usar_original)
+                               folga, percentil, tolerancia, usar_original,
+                               piso_fixo)
     rep.candidatas = len(alvos)
     if not alvos:
         return rep
@@ -672,7 +681,7 @@ def relatorio_seco(entries: Iterable[TextEntry], max_line: int = MAX_LINE_DEFAUL
                    max_lines: int = MAX_LINES_DEFAULT,
                    newline: str = "auto", folga: float = FOLGA_DEFAULT,
                    percentil: int = PISO_PERCENTIL, tolerancia: int = 0,
-                   usar_original: bool = True
+                   usar_original: bool = True, piso_fixo: int = 0
                    ) -> list[tuple[TextEntry, int, int, int]]:
     """
     O que estoura, sem chamar a API (--dry-run).
@@ -685,7 +694,8 @@ def relatorio_seco(entries: Iterable[TextEntry], max_line: int = MAX_LINE_DEFAUL
     nl = detect_newline(itens, None if newline == "auto" else newline)
     out = []
     for e, orc in candidatas_orcadas(itens, max_line, max_lines, newline,
-                                     folga, percentil, tolerancia, usar_original):
+                                     folga, percentil, tolerancia, usar_original,
+                                     piso_fixo):
         quebrada = wrap_text(e.translation, max_line, nl)
         out.append((e, line_count(quebrada), display_width(e.translation), orc))
     out.sort(key=lambda t: (t[2] - t[3]) if t[3] else 0, reverse=True)
