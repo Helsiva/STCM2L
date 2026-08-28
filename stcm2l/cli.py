@@ -32,8 +32,8 @@ from .pipeline import (
 )
 from .shorten import (
     ESFORCO_PADRAO, PROVEDORES, ResumoEncurtamento, fazer_chamador,
-    larguras_dos_originais, percentis, piso_e_teto, relatorio_seco,
-    shorten_entries,
+    geometria_dos_originais, larguras_dos_originais, percentis, piso_e_teto,
+    relatorio_seco, shorten_entries,
 )
 from .textio import (
     FOLGA_DEFAULT, MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, PISO_PERCENTIL,
@@ -705,6 +705,8 @@ def cmd_shorten(args: argparse.Namespace) -> int:
         deficit: dict[str, int] = {}
         pisos: list[tuple[str, int, int]] = []
         larguras: list[int] = []
+        por_linha: list[int] = []
+        linhas_orig: dict[int, int] = {}
         faixas = ((10, "1-10 colunas"), (25, "11-25 colunas"),
                   (50, "26-50 colunas"), (10 ** 9, "50+ colunas"))
         for path in files:
@@ -714,6 +716,10 @@ def cmd_shorten(args: argparse.Namespace) -> int:
             piso, teto = piso_e_teto(entries, args.max_line, args.max_lines,
                                      args.percentil)
             larguras.extend(larguras_dos_originais(entries))
+            lg, ct = geometria_dos_originais(entries)
+            por_linha.extend(lg)
+            for k, v in ct.items():
+                linhas_orig[k] = linhas_orig.get(k, 0) + v
             pend = relatorio_seco(entries, args.max_line, args.max_lines,
                                   args.newline, args.width_slack, args.percentil,
                                   args.width_tolerance, not args.no_original_budget)
@@ -755,6 +761,18 @@ def cmd_shorten(args: argparse.Namespace) -> int:
             print("    " + "  ".join(f"{k}={v}" for k, v in pc.items()))
             print(f"    o piso sai do P{args.percentil}. Se a massa esta bem acima dele, "
                   f"suba com --percentil.")
+        if por_linha:
+            por_linha.sort()
+            pl = percentis(por_linha)
+            print(f"\n  largura de cada LINHA do original (a LARGURA da caixa):")
+            print("    " + "  ".join(f"{k}={v}" for k, v in pl.items()))
+            total_o = sum(linhas_orig.values())
+            print(f"  quantas linhas o original ja usava (a ALTURA da caixa):")
+            for n in sorted(linhas_orig):
+                print(f"    {n} linha(s): {linhas_orig[n]:>7} "
+                      f"({linhas_orig[n] * 100 // max(total_o, 1)}%)")
+            print(f"    -> a caixa comporta ao menos {pl['max']} colunas x "
+                  f"{max(linhas_orig)} linhas, porque o jogo ja desenhou isso.")
         if pisos:
             print(f"\n  piso do lote (P{args.percentil} dos originais): "
                   + ", ".join(f"{n}={p}" for n, p, _ in pisos[:3])

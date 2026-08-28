@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .textio import (
+    _SPLIT_NEWLINE_RE,
     FOLGA_DEFAULT, MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, PISO_PERCENTIL, TextEntry,
     box_budget, box_overflow, classify_text, detect_newline, display_width,
     entry_budget, line_count, originais_de_fala, piso_do_lote, protect_tags,
@@ -701,6 +702,26 @@ def larguras_dos_originais(entries: Iterable[TextEntry]) -> list[int]:
     ("o jogo mostrou isto, logo cabe").
     """
     return sorted(display_width(t) for t in originais_de_fala(entries))
+
+
+def geometria_dos_originais(entries: Iterable[TextEntry]) -> tuple[list[int], dict[int, int]]:
+    """
+    A largura de cada LINHA das falas originais, e quantas linhas cada fala tem.
+
+    `display_width` soma o texto todo, o que confunde duas coisas bem diferentes:
+    uma fala de 80 colunas numa linha so prova uma caixa larga; a mesma fala
+    quebrada em tres prova uma caixa estreita e alta. Como o script traz as
+    quebras que o jogo desenhou, a geometria da caixa esta nos dados - e e a
+    medicao que a regua nao conseguiu arrancar do jogo.
+    """
+    larguras: list[int] = []
+    contagem: dict[int, int] = {}
+    for texto in originais_de_fala(entries):
+        linhas = _SPLIT_NEWLINE_RE.split(texto)[::2]
+        larguras.extend(display_width(l) for l in linhas if l.strip())
+        n = len([l for l in linhas if l.strip()])
+        contagem[n] = contagem.get(n, 0) + 1
+    return sorted(larguras), contagem
 
 
 def percentis(valores: list[int]) -> dict[str, int]:
