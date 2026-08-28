@@ -85,6 +85,16 @@ Ele imprime três coisas:
 Escapes rápidos: `--encoding cp932` (ou `utf-16-le`) força a codificação, e
 `extract --all-blocks` exporta todos os blocos, inclusive os que não parecem texto.
 
+> **Confira a codificação detectada antes de traduzir.** `cp1252` e `latin-1`
+> mapeiam byte a byte e por isso **nunca falham**: se alguns blocos do arquivo não
+> forem texto, elas decodificam tudo e vencem a detecção, e aí o roteiro japonês
+> inteiro sai mojibakado no `.json` (`発言者名` vira `”Œ¾ŽÒ–¼`). A detecção
+> hoje só recorre a elas quando nenhuma codificação estrita (`utf-8`, `cp932`,
+> `utf-16-le`) cobre pelo menos 60% dos blocos — mas se o `info` mostrar
+> `cp1252` ou `latin-1` num script japonês, force com `--encoding cp932`.
+> Traduzir mojibake produz lixo, e o `original` mojibakado não casa mais com o
+> `.DAT` na hora de injetar.
+
 Com `-r` numa pasta, a saída **espelha a estrutura de subpastas** da entrada.
 Isso importa na hora de devolver os arquivos para dentro do container: a árvore
 gerada pode ser copiada inteira por cima da extraída, sem redistribuir arquivo a
@@ -262,12 +272,40 @@ aparecem por seção.
 
 ---
 
+## "texto original divergente": o `.json` não descreve esse `.DAT`
+
+O `inject` compara o campo `original` de cada entrada com o bloco que ela diz
+ocupar. Quando os dois não batem, a entrada **não é injetada** — divergência
+significa que o `original` descreve *outro* bloco, e escrever ali troca uma
+string pela tradução de outra. Foi assim que `switch` virou `trocar` num script
+e o jogo parou de achar a palavra-chave.
+
+O aviso mostra os dois lados, e a forma deles diz a causa:
+
+| o que aparece | o que é |
+|---|---|
+| `no .DAT está 'ꣁ@'`, `no arquivo de tradução '凜　'` | mojibake: a codificação de leitura está errada |
+| `no .DAT está '”Œ¾ŽÒ–¼'` | cp932 lido como cp1252 — `発言者名` mojibakado |
+| `no .DAT está 'switch'`, `no arquivo de tradução 'trocar'` | o `.json` foi extraído de uma saída **já injetada** |
+
+Nos dois primeiros casos a ferramenta se corrige sozinha: ela mede em qual
+codificação os `original` do `.json` batem com o `.DAT` e usa essa, avisando que
+o meta estava errado. No terceiro não há conserto automático — o `.json` está
+contaminado e precisa ser refeito a partir dos `.DAT` limpos.
+
+`--ignore-mismatch` injeta mesmo assim; `--strict` aborta o arquivo inteiro.
+
+---
+
 ## O jogo não sai da intro (ou volta para o título)
 
 Sintoma clássico de script quebrado **sem crash**: a cena termina e a engine não
 consegue seguir para a próxima, então volta para o começo. Em ordem de
 probabilidade:
 
+0. **O `.json` está contaminado** e injetou a tradução de um bloco em cima de
+   outro (veja a seção acima). Uma palavra-chave da engine trocada — `switch` →
+   `trocar` — basta para o roteiro parar de andar.
 1. **Identificador traduzido.** O nome do próximo script, do arquivo de voz ou de
    uma label virou português. Rode
    `python stcm2l.py compare .\scripts --patched .\out` — identificador alterado

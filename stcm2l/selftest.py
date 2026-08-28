@@ -353,6 +353,56 @@ def _check_fit(tmpdir: Path, log) -> bool:
     for m in mrep.problems[:3]:
         log(f"     - {m}")
     ok &= meta_ok
+
+    # -- latin-1/cp1252 decodificam QUALQUER byte, entao vencem toda disputa
+    #    decidida por "quantos blocos decodificam". Bastam alguns blocos nao
+    #    textuais para o cp932 perder e o roteiro japones inteiro sair mojibake
+    #    no .json ('\u767a\u8a00\u8005\u540d' virava '\u201d\xad\u0152\xbe\u017d\xd2\u2013\xbc').
+    #    (os bytes FD FE FF nao existem em cp932 e sao letras em latin-1, entao
+    #    entram no arquivo por substituicao crua, do mesmo tamanho)
+    #    o japones da amostra precisa ser do tipo que o cp1252 aceita inteiro
+    #    (sem os bytes 81/8D/8F/90/9D, que ele recusa) - senao o cp1252 ja perde
+    #    sozinho e o teste nao prova nada. '\u767a\u8a00\u8005\u540d' e exatamente esse caso.
+    jp_ambiguo = ["\u767a\u8a00\u8005\u540d", "\u4f1a\u8a71", "\u9078\u629e\u80a2", "\u80cc\u666f", "\u97f3\u697d", "\u6642\u9593", "\u540d\u524d"]
+    pool_ambiguo = ["\u4f1a\u8a71\u9078\u629e", "\u80cc\u666f\u97f3\u697d"]
+    bruto = bytearray(make_otome_sample(jp_ambiguo + ["aaaa", "bbbb"], pool_ambiguo))
+    bruto = bruto.replace(b"aaaa", b"\xfd\xfe\xff\xfd").replace(b"bbbb", b"\xfe\xff\xfd\xfe")
+    sujo = tmpdir / "latin.DAT"
+    sujo.write_bytes(bytes(bruto))
+    escolhida = detect_encoding(parse(sujo.read_bytes()))
+    lat_ok = escolhida == "cp932"
+    log(f"[32] cp932 nao perde para latin-1 por causa de bloco nao textual: "
+        f"escolheu {escolhida} ({'OK' if lat_ok else 'FALHOU'})")
+    ok &= lat_ok
+
+    # -- 'original' descrevendo outro bloco. Escrever assim troca uma string
+    #    pela traducao de OUTRA - foi como 'switch' virou 'trocar'.
+    sdat = tmpdir / "switch.DAT"
+    sdat.write_bytes(make_otome_sample(["switch"] + inline, pool))
+    sscript = parse(sdat.read_bytes())
+    sentries = collect_entries(sscript, "cp932")
+    alvo_sw = next(e for e in sentries if e.original == "switch")
+    antes = sscript.elements[alvo_sw.elem].segments[alvo_sw.seg].content
+    alvo_sw.original = "trocar"          # .json contaminado
+    alvo_sw.translation = "mudar"
+    stexts = tmpdir / "switch.json"
+    dump_entries(sentries, stexts, sdat.name, "cp932", "json")
+    sout = tmpdir / "out" / "switch.DAT"
+    srep = inject_file(sdat, stexts, sout, out_encoding="utf-8")
+    depois = parse(sout.read_bytes()).elements[alvo_sw.elem].segments[alvo_sw.seg].content
+    div_ok = (srep.skip_divergente == 1 and depois == antes == b"switch")
+    log(f"[33] entrada divergente NAO e injetada: bloco continua {depois!r}, "
+        f"{srep.skip_divergente} pulada(s) por divergencia ({'OK' if div_ok else 'FALHOU'})")
+    ok &= div_ok
+
+    # e --ignore-mismatch continua permitindo forcar
+    sout2 = tmpdir / "out" / "switch_forcado.DAT"
+    inject_file(sdat, stexts, sout2, out_encoding="utf-8", ignore_mismatch=True)
+    forcado = parse(sout2.read_bytes()).elements[alvo_sw.elem].segments[alvo_sw.seg].content
+    forca_ok = forcado == b"mudar"
+    log(f"[34] --ignore-mismatch ainda forca: bloco virou {forcado!r} "
+        f"({'OK' if forca_ok else 'FALHOU'})")
+    ok &= forca_ok
     return bool(ok)
 
 

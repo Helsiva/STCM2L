@@ -31,6 +31,20 @@ from .core import DataBlock, Script
 #: tamanho par, entao so vence se decodificar ESTRITAMENTE mais blocos que os outros.
 CANDIDATE_ENCODINGS = ("utf-8", "cp932", "cp1252", "latin-1", "utf-16-le")
 
+#: Codificacoes que RECUSAM byte invalido - decodificar com sucesso e prova de
+#: que a escolha esta certa.
+STRICT_ENCODINGS = ("utf-8", "cp932", "utf-16-le")
+
+#: Codificacoes que mapeiam byte a byte e por isso NUNCA falham. Elas decodificam
+#: japones em cp932 como mojibake ('発言者名' vira '”\xadŒ¾ŽÒ–¼') sem levantar
+#: erro nenhum, entao vencem qualquer disputa decidida por "quantos blocos
+#: decodificam". Só entram quando nenhuma estrita da conta do arquivo.
+FALLBACK_ENCODINGS = ("cp1252", "latin-1")
+
+#: fracao dos blocos que uma codificacao estrita precisa cobrir para ser aceita
+#: sem consultar as de reserva
+STRICT_MIN_RATIO = 0.6
+
 #: caracteres de controle aceitos dentro de um texto de jogo
 _ALLOWED_CTRL = {0x09, 0x0A, 0x0D}
 
@@ -68,18 +82,31 @@ def detect_encoding(script: Script, forced: str | None = None) -> str:
     blobs = [db.content for _, _, db in script.iter_data_blocks() if db.content]
     if not blobs:
         return "utf-8"
-    best, best_score = "utf-8", -1
-    for enc in CANDIDATE_ENCODINGS:
-        score = 0
-        for raw in blobs:
-            txt = decode_block(raw, enc)
-            if txt is not None and looks_like_text(txt):
-                score += 1
-        if score > best_score:
-            best, best_score = enc, score
-        if score == len(blobs):
-            break
-    return best
+
+    def pontua(enc: str) -> int:
+        return sum(1 for raw in blobs
+                   if (txt := decode_block(raw, enc)) is not None and looks_like_text(txt))
+
+    def melhor(encs: tuple[str, ...]) -> tuple[str, int]:
+        # empate fica com a primeira da lista - a ordem e a preferencia
+        vencedora, pontos = encs[0], -1
+        for enc in encs:
+            p = pontua(enc)
+            if p > pontos:
+                vencedora, pontos = enc, p
+            if p == len(blobs):
+                break
+        return vencedora, pontos
+
+    # Uma estrita que cobre a maior parte do arquivo ganha de saida. Sem esse
+    # corte, um punhado de blocos nao-textuais derruba a pontuacao do cp932 e o
+    # latin-1 - que decodifica QUALQUER byte - leva a disputa, transformando o
+    # roteiro japones inteiro em mojibake no arquivo extraido.
+    enc_estrita, pontos_estritos = melhor(STRICT_ENCODINGS)
+    if pontos_estritos >= len(blobs) * STRICT_MIN_RATIO:
+        return enc_estrita
+    enc_reserva, pontos_reserva = melhor(FALLBACK_ENCODINGS)
+    return enc_reserva if pontos_reserva > pontos_estritos else enc_estrita
 
 
 #: Pontuacao que o NFKD NAO decompoe e que nao existe em cp932/ascii.

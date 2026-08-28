@@ -159,6 +159,9 @@ class InjectReport:
     skip_sem_traducao: int = 0
     skip_igual: int = 0
     skip_alvo: int = 0
+    skip_divergente: int = 0
+    #: entradas cujo texto original nao bate com o bloco do .DAT
+    divergentes: int = 0
     #: entradas recusadas por nao caber no bloco original (modo --fit)
     overflow: int = 0
     #: maior estouro visto, em bytes (para dimensionar o corte manual)
@@ -248,6 +251,7 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
                 out_encoding: str | None = None, fallback: str = "strict",
                 relocate: str = "scan", fix_len_params: bool = False,
                 strict_match: bool = False,
+                ignore_mismatch: bool = False,
                 max_line: int = MAX_LINE_DEFAULT,
                 newline: str = "auto",
                 fit: bool = False,
@@ -324,7 +328,18 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
                    f"no arquivo de traducao {_corta(entry.original)!r}")
             if strict_match:
                 raise Stcm2lError(msg)
-            report.problems.append(msg)
+            # Divergencia significa que a entrada foi extraida de OUTRO texto:
+            # o .json descreve um bloco que nao e este. Escrever assim troca uma
+            # string pela traducao de outra - e como 'switch' vira 'trocar' e o
+            # jogo perde a palavra-chave. O padrao e nao escrever.
+            report.problems.append(
+                msg + ("" if ignore_mismatch else " - NAO injetado (use --ignore-mismatch para forcar)")
+            )
+            report.divergentes += 1
+            if not ignore_mismatch:
+                report.skipped += 1
+                report.skip_divergente += 1
+                continue
 
         if translation == entry.original:
             report.skipped += 1

@@ -238,6 +238,7 @@ def cmd_inject(args: argparse.Namespace) -> int:
     applied = 0
     overflow = 0
     id_changes = 0
+    divergentes = 0
     for path in files:
         pair = _pair_texts(path, texts)
         if pair is None:
@@ -254,7 +255,7 @@ def cmd_inject(args: argparse.Namespace) -> int:
                 path, pair, target, out_encoding=args.out_encoding,
                 fallback=args.fallback, relocate=args.relocate,
                 fix_len_params=args.fix_len and not args.no_fix_len,
-                strict_match=args.strict,
+                strict_match=args.strict, ignore_mismatch=args.ignore_mismatch,
                 max_line=args.max_line, newline=args.newline,
                 fit=args.fit, allow_id_change=args.allow_id_change,
             )
@@ -267,6 +268,7 @@ def cmd_inject(args: argparse.Namespace) -> int:
             continue
         applied += rep.applied
         overflow += rep.overflow
+        divergentes += rep.divergentes
         id_changes += rep.id_changes
         extra = ""
         if rep.overflow:
@@ -281,6 +283,7 @@ def cmd_inject(args: argparse.Namespace) -> int:
             (rep.skip_igual, "traducao identica ao original"),
             (rep.skip_id, "identificador (traducao recusada)"),
             (rep.overflow, "nao coube no bloco original (--fit)"),
+            (rep.skip_divergente, "texto original nao bate com o bloco do .DAT"),
             (rep.skip_alvo, "alvo invalido (elemento/segmento nao existe no .DAT)"),
         ]
         acertos, testados = rep.match_originais
@@ -305,6 +308,10 @@ def cmd_inject(args: argparse.Namespace) -> int:
     if overflow:
         print(f"{overflow} fala(s) nao couberam no bloco original e ficaram em japones. "
               f"Encurte a traducao dessas entradas e rode de novo.")
+    if divergentes:
+        print(f"{divergentes} entrada(s) tinham 'original' diferente do bloco do .DAT e nao "
+              f"foram injetadas. Isso quer dizer que o .json foi extraido de OUTROS arquivos "
+              f"(ou de uma saida ja injetada): re-extraia dos .DAT limpos e refaca a traducao.")
     if applied == 0:
         print("NENHUM texto foi injetado: a saida e uma copia do original. Se todos os "
               "pulados foram 'sem traducao', o --texts esta apontando para os .json "
@@ -570,7 +577,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "label). Por padrao o original e preservado: trocar esses nomes faz o "
                          "jogo nao achar o recurso e voltar para o titulo.")
     sp.add_argument("--strict", action="store_true",
-                    help="aborta se o texto original do .DAT divergir do arquivo de traducao")
+                    help="aborta o arquivo inteiro se o texto original divergir")
+    sp.add_argument("--ignore-mismatch", action="store_true",
+                    help="injeta mesmo quando o texto original do .json nao bate com o bloco "
+                         "do .DAT. Por padrao a entrada e PULADA: divergencia quer dizer que o "
+                         "'original' descreve outro bloco, e escrever ali troca uma string pela "
+                         "traducao de outra.")
     sp.add_argument("--limit", type=int, default=15, help="avisos mostrados por arquivo")
     quebra(sp)
     common(sp)
