@@ -23,6 +23,7 @@ de quebra daqui. Toda resposta passa por `box_overflow` antes de ser aceita.
 from __future__ import annotations
 
 import json
+import math
 import time
 import urllib.parse
 import urllib.request
@@ -688,6 +689,29 @@ def relatorio_seco(entries: Iterable[TextEntry], max_line: int = MAX_LINE_DEFAUL
         out.append((e, line_count(quebrada), display_width(e.translation), orc))
     out.sort(key=lambda t: (t[2] - t[3]) if t[3] else 0, reverse=True)
     return out
+
+
+def larguras_dos_originais(entries: Iterable[TextEntry]) -> list[int]:
+    """
+    As larguras das falas ORIGINAIS. E a distribuicao que define a caixa.
+
+    O percentil usado como piso e um chute enquanto ninguem olha esta curva: se
+    a massa esta em 60 colunas e o P90 devolve 39, a populacao tem coisa que nao
+    e fala exibida - ou o percentil esta baixo demais para o que a premissa diz
+    ("o jogo mostrou isto, logo cabe").
+    """
+    return sorted(display_width(t) for t in originais_de_fala(entries))
+
+
+def percentis(valores: list[int]) -> dict[str, int]:
+    """P50/P75/P90/P95/P99 e o maximo, para escolher o piso com dado e nao chute."""
+    if not valores:
+        return {}
+    def _p(q: int) -> int:
+        i = max(0, math.ceil(len(valores) * q / 100) - 1)
+        return valores[min(i, len(valores) - 1)]
+    return {"P50": _p(50), "P75": _p(75), "P90": _p(90),
+            "P95": _p(95), "P99": _p(99), "max": valores[-1]}
 
 
 def piso_e_teto(entries: Iterable[TextEntry], max_line: int = MAX_LINE_DEFAULT,

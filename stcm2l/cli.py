@@ -32,7 +32,8 @@ from .pipeline import (
 )
 from .shorten import (
     ESFORCO_PADRAO, PROVEDORES, ResumoEncurtamento, fazer_chamador,
-    piso_e_teto, relatorio_seco, shorten_entries,
+    larguras_dos_originais, percentis, piso_e_teto, relatorio_seco,
+    shorten_entries,
 )
 from .textio import (
     FOLGA_DEFAULT, MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, PISO_PERCENTIL,
@@ -703,6 +704,7 @@ def cmd_shorten(args: argparse.Namespace) -> int:
         n_entradas = n_traduzidas = por_largura = por_linhas = 0
         deficit: dict[str, int] = {}
         pisos: list[tuple[str, int, int]] = []
+        larguras: list[int] = []
         faixas = ((10, "1-10 colunas"), (25, "11-25 colunas"),
                   (50, "26-50 colunas"), (10 ** 9, "50+ colunas"))
         for path in files:
@@ -711,6 +713,7 @@ def cmd_shorten(args: argparse.Namespace) -> int:
             n_traduzidas += sum(1 for e in entries if e.translation.strip())
             piso, teto = piso_e_teto(entries, args.max_line, args.max_lines,
                                      args.percentil)
+            larguras.extend(larguras_dos_originais(entries))
             pend = relatorio_seco(entries, args.max_line, args.max_lines,
                                   args.newline, args.width_slack, args.percentil,
                                   args.width_tolerance, not args.no_original_budget)
@@ -744,6 +747,14 @@ def cmd_shorten(args: argparse.Namespace) -> int:
                     dica = ("   <- barato, considere --width-tolerance"
                             if rotulo.startswith("1-10") else "")
                     print(f"    {rotulo:>14}: {deficit[rotulo]:>7}{dica}")
+        if larguras:
+            larguras.sort()
+            pc = percentis(larguras)
+            print(f"\n  largura das {len(larguras)} falas ORIGINAIS (e a caixa que o "
+                  f"jogo comprovadamente desenhou):")
+            print("    " + "  ".join(f"{k}={v}" for k, v in pc.items()))
+            print(f"    o piso sai do P{args.percentil}. Se a massa esta bem acima dele, "
+                  f"suba com --percentil.")
         if pisos:
             print(f"\n  piso do lote (P{args.percentil} dos originais): "
                   + ", ".join(f"{n}={p}" for n, p, _ in pisos[:3])
