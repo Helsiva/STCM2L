@@ -551,6 +551,23 @@ def shorten_entries(entries: list[TextEntry], chamar_modelo: Chamador, *,
     return rep
 
 
+def linhas_por_fala(entries: Iterable[TextEntry], max_line: int = MAX_LINE_DEFAULT,
+                    newline: str = "auto") -> list[int]:
+    """
+    Quantas linhas cada fala traduzida ocupa. Serve para o histograma do --dry-run.
+
+    Um "0 estouram" sozinho e ambiguo: pode ser que nada esteja errado, ou que
+    nao houvesse o que medir. A distribuicao desfaz a duvida - e um monte de
+    falas batendo EXATAMENTE no limite denuncia que a largura assumida esta
+    maior que a caixa de verdade.
+    """
+    itens = list(entries)
+    nl = detect_newline(itens, None if newline == "auto" else newline)
+    return [line_count(wrap_text(e.translation, max_line, nl))
+            for e in itens if e.translation.strip()
+            and classify_text(e.original) != "id"]
+
+
 def relatorio_seco(entries: Iterable[TextEntry], max_line: int = MAX_LINE_DEFAULT,
                    max_lines: int = MAX_LINES_DEFAULT,
                    newline: str = "auto") -> list[tuple[TextEntry, int, int]]:

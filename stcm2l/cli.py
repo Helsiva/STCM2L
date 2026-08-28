@@ -32,7 +32,7 @@ from .pipeline import (
 )
 from .shorten import (
     ESFORCO_PADRAO, PROVEDORES, ResumoEncurtamento, fazer_chamador,
-    relatorio_seco, shorten_entries,
+    linhas_por_fala, relatorio_seco, shorten_entries,
 )
 from .textio import (
     MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, box_budget, dump_entries, load_entries,
@@ -696,8 +696,15 @@ def cmd_shorten(args: argparse.Namespace) -> int:
     # --dry-run nao chama a API: primeiro se mede o gasto, depois se gasta
     if args.dry_run:
         total = 0
+        n_entradas = n_traduzidas = 0
+        histograma: dict[int, int] = {}
         for path in files:
             entries, _ = load_entries(path)
+            n_entradas += len(entries)
+            n_traduzidas += sum(1 for e in entries if e.translation.strip())
+            for linhas in linhas_por_fala(entries, args.max_line, args.newline):
+                chave = min(linhas, 6)
+                histograma[chave] = histograma.get(chave, 0) + 1
             pend = relatorio_seco(entries, args.max_line, args.max_lines, args.newline)
             total += len(pend)
             if pend:
@@ -707,11 +714,28 @@ def cmd_shorten(args: argparse.Namespace) -> int:
                     print(f"        [{e.id}] {linhas} linhas / {colunas} colunas: "
                           f"{e.translation[:60]!r}")
         orc = box_budget(args.max_line, args.max_lines)
+        print(f"\n{len(files)} arquivo(s), {n_entradas} entradas, "
+              f"{n_traduzidas} com traducao.")
+        if histograma:
+            print("  quantas linhas cada fala traduzida ocupa a "
+                  f"{args.max_line} colunas:")
+            for linhas in sorted(histograma):
+                rotulo = f"{linhas}+" if linhas >= 6 else str(linhas)
+                marca = "  <- estoura" if linhas > args.max_lines else ""
+                print(f"    {rotulo:>2} linha(s): {histograma[linhas]:>6}{marca}")
         print(f"\n{total} falas estouram {args.max_lines} linhas de {args.max_line} "
               f"colunas (alvo: {orc} colunas visiveis).")
         if total:
             print(f"Rode sem --dry-run para encurtar. Estimativa: ~{total // 25 + 1} "
                   f"requisicoes em lotes de 25.")
+        elif not n_traduzidas:
+            print("Nenhuma entrada tem traducao: nao havia o que medir. O --texts "
+                  "aponta para os .json EXTRAIDOS em vez dos TRADUZIDOS?")
+        elif histograma.get(args.max_lines, 0) > n_traduzidas * 0.15:
+            print(f"Nada estoura, mas {histograma[args.max_lines]} falas batem "
+                  f"EXATAMENTE em {args.max_lines} linhas. Se no jogo elas estao "
+                  f"cortando, a caixa e mais estreita que {args.max_line} colunas - "
+                  f"meça a largura real e re-rode com --max-line menor.")
         return 0
 
     if not args.output:
