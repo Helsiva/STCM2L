@@ -26,7 +26,8 @@ from . import __version__
 from .compare import compare
 from .core import SlotVerdict, Stcm2lError, parse, slot_verdicts
 from .pipeline import (
-    DAT_SUFFIXES, extract_file, inject_file, inspect, iter_inputs, verify_file,
+    DAT_SUFFIXES, Pendencia, extract_file, inject_file, inspect, iter_inputs,
+    pendencias, verify_file,
 )
 from .textio import MAX_LINE_DEFAULT, dump_entries, load_entries
 from .translate import TranslationError, translate_entries
@@ -619,6 +620,55 @@ def cmd_slots(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_pending(args: argparse.Namespace) -> int:
+    """O que sobrou sem traduzir no .DAT ja injetado - e por que."""
+    src = Path(args.input)
+    files = iter_inputs(src, args.recursive, args.suffixes)
+    if not files:
+        print("nenhum arquivo encontrado.")
+        return 1
+    texts = Path(args.texts) if args.texts else None
+    total_cjk = total_prose = total_blocos = 0
+    motivos: dict[str, int] = {}
+    amostras: list[tuple[str, Pendencia]] = []
+    for path in files:
+        par = _pair_texts(path, texts) if texts else None
+        try:
+            pend, blocos = pendencias(path, par, args.encoding)
+        except Stcm2lError as exc:
+            print(f"[ERRO] {path.name}: {exc}")
+            continue
+        total_blocos += blocos
+        cjk = [q for q in pend if q.kind == "cjk"]
+        prosa = [q for q in pend if q.kind == "prose"]
+        total_cjk += len(cjk)
+        total_prose += len(prosa)
+        for q in pend:
+            motivos[q.motivo or "(sem arquivo de traducao)"] = \
+                motivos.get(q.motivo or "(sem arquivo de traducao)", 0) + 1
+        if cjk and len(amostras) < args.limit:
+            amostras.extend((path.name, q) for q in cjk[:3])
+        if cjk and not args.quiet:
+            print(f"[{len(cjk):>5} JA] {path.name}"
+                  + (f"  (+{len(prosa)} em outro idioma)" if prosa else ""))
+
+    print(f"\n{total_blocos} blocos de texto nos arquivos injetados.")
+    print(f"  ainda em japones ........ {total_cjk}")
+    print(f"  em outro idioma latino .. {total_prose}  (pode ser ingles nao traduzido)")
+    if motivos:
+        print("\n  motivo:")
+        for motivo, n in sorted(motivos.items(), key=lambda kv: -kv[1]):
+            print(f"    {n:>7}  {motivo}")
+    if amostras:
+        print("\n  exemplos do que ficou em japones:")
+        for nome, q in amostras[:args.limit]:
+            corte = q.texto if len(q.texto) <= 46 else q.texto[:46] + "..."
+            print(f"    {nome} [{q.entry_id}] {corte!r}  <- {q.motivo}")
+    if not texts:
+        print("\n  (passe --texts <pasta> para saber o MOTIVO de cada pendencia)")
+    return 0
+
+
 def cmd_selftest(args: argparse.Namespace) -> int:
     from .selftest import run
     return 0 if run() else 1
@@ -782,6 +832,15 @@ def build_parser() -> argparse.ArgumentParser:
                          "lote no fim. Para varrer uma arvore inteira sem afogar o terminal.")
     common(sp)
     sp.set_defaults(func=cmd_compare)
+
+    sp = sub.add_parser("pending", help="o que sobrou sem traduzir no .DAT injetado, e por que")
+    sp.add_argument("input", help="arquivo .DAT INJETADO ou pasta com a saida do inject")
+    sp.add_argument("--texts", help="pasta dos .json traduzidos (revela o MOTIVO de cada caso)")
+    sp.add_argument("--encoding", help="forca a codificacao de leitura")
+    sp.add_argument("--limit", type=int, default=15, help="exemplos mostrados")
+    sp.add_argument("-q", "--quiet", action="store_true", help="so o resumo, sem a lista por arquivo")
+    common(sp)
+    sp.set_defaults(func=cmd_pending)
 
     sp = sub.add_parser("slots", help="quais words de parametro sao MESMO ponteiro")
     sp.add_argument("input", help="arquivo .DAT ORIGINAL ou pasta com os originais")

@@ -33,6 +33,7 @@ from typing import Any, Callable, Iterable
 
 from .core import Stcm2lError
 from .textio import (
+    CJK_RE,
     MAX_LINE_DEFAULT, TextEntry, classify_text, protect_tags, restore_tags,
     wrap_entries,
 )
@@ -415,43 +416,61 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
     todo = [orig for orig in prepared if orig not in cache]
     log(f"  {len(pending)} entradas / {len(prepared)} textos unicos / {len(todo)} a traduzir")
 
+    # Um --source fixo mente sobre metade de um roteiro misto. Mandar uma fala em
+    # ingles com sl=ja faz o Google devolver ela INTACTA - ele nao consegue ler
+    # aquilo como japones - e o resultado e portugues salpicado de ingles. Entao
+    # o idioma declarado vale para o que tem kana/kanji, e o resto vai como auto.
+    grupos: list[tuple[str | None, list[str]]] = [(source, todo)]
+    if source and source.strip().lower().replace("-", "_").split("_")[0] in ("ja", "jp", "jpn"):
+        com_cjk = [o for o in todo if CJK_RE.search(o)]
+        sem_cjk = [o for o in todo if not CJK_RE.search(o)]
+        if sem_cjk:
+            log(f"  --source {source}: {len(sem_cjk)} textos sem kana/kanji vao com "
+                f"deteccao automatica (mandar ingles como japones devolveria ele intacto)")
+            grupos = [(source, com_cjk), (None, sem_cjk)]
+
+    tarefas: list[tuple[str | None, list[str]]] = []
+    for src_grupo, lista in grupos:
+        for ini in range(0, len(lista), batch_size):
+            tarefas.append((src_grupo, lista[ini:ini + batch_size]))
+
     def _registrar(original: str, traduzido: str) -> None:
         """Guarda no cache assim que um texto fica pronto, gravando de vez em quando."""
         cache[original] = traduzido
         if cache_path and len(cache) % 25 == 0:
             _salvar_cache(cache_path, cache)
 
-    for start in range(0, len(todo), batch_size):
-        chunk = todo[start:start + batch_size]
+    feitos = 0
+    for src_lote, chunk in tarefas:
         payload = [prepared[o][0] for o in chunk]
         for attempt in range(1, retries + 1):
             try:
                 if provider == "deepl":
-                    got = deepl_batch(payload, api_key or "", source, target, pro=False)
+                    got = deepl_batch(payload, api_key or "", src_lote, target, pro=False)
                 elif provider == "deepl-pro":
-                    got = deepl_batch(payload, api_key or "", source, target, pro=True)
+                    got = deepl_batch(payload, api_key or "", src_lote, target, pro=True)
                 elif provider == "google":
-                    got = google_batch(payload, api_key or "", source, target.lower())
+                    got = google_batch(payload, api_key or "", src_lote, target.lower())
                 elif provider == "gtx":
                     alvo = target.split("-")[0].lower()
                     try:
-                        got = gtx_bulk_split(payload, source, alvo)
+                        got = gtx_bulk_split(payload, src_lote, alvo)
                     except FatalTranslationError as exc:
                         # barrado por IP: melhor lento do que sem traducao
                         log(f"  {exc}")
                         log("  caindo para o modo 1-a-1: uma requisicao por fala, "
                             "com pausa entre elas - isto vai demorar")
                         got = gtx_serial(
-                            payload, source, alvo,
+                            payload, src_lote, alvo,
                             on_done=lambda i, txt: _registrar(chunk[i], txt),
                         )
                 elif provider == "gtx-serial":
                     got = gtx_serial(
-                        payload, source, target.split("-")[0].lower(),
+                        payload, src_lote, target.split("-")[0].lower(),
                         on_done=lambda i, txt: _registrar(chunk[i], txt),
                     )
                 elif provider == "googletrans":
-                    got = googletrans_batch(payload, source, target.split("-")[0].lower())
+                    got = googletrans_batch(payload, src_lote, target.split("-")[0].lower())
                 else:
                     raise TranslationError(f"provedor desconhecido: {provider}")
                 break
@@ -470,7 +489,8 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
         # grava a cada lote: se a proxima chamada morrer, o que ja foi traduzido
         # (e pago) nao se perde - basta rodar de novo com o mesmo --cache
         _salvar_cache(cache_path, cache)
-        log(f"  traduzidos {min(start + batch_size, len(todo))}/{len(todo)}")
+        feitos += len(chunk)
+        log(f"  traduzidos {feitos}/{len(todo)}")
         if delay:
             time.sleep(delay)
 

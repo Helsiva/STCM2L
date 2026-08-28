@@ -170,6 +170,35 @@ embutido nas ações ou num pool solto.
 
 **Manual:** edite o `.json` (campo `"translation"`) ou o `.txt` (linhas iniciadas por `>`).
 
+#### `--source` num roteiro misto
+
+`--source JA` declara que **tudo** é japonês. Mandar uma fala em inglês com
+`sl=ja` faz o Google devolvê-la **intacta** — ele não consegue ler aquilo como
+japonês — e o resultado é português salpicado de inglês.
+
+A ferramenta separa sozinha: o idioma declarado vale para o que tem kana/kanji,
+e o resto vai com detecção automática. Você vê isso no log:
+
+```
+--source JA: 412 textos sem kana/kanji vao com deteccao automatica
+```
+
+### 5. O que sobrou sem traduzir
+
+```powershell
+python stcm2l.py pending .\out -r --texts .\txt_ptbr -q
+```
+
+Roda na **saída** do inject e diz o que continua no idioma original — e, cruzando
+com o arquivo de tradução, **por quê**:
+
+| motivo | o que fazer |
+|---|---|
+| `nao foi extraido` | o bloco nunca virou entrada. Veja `diag` nesse arquivo |
+| `sem traducao` | o filtro (`--only-cjk`/`--skip-ids`) preservou, ou o provedor pulou |
+| `traducao igual ao original` | o tradutor devolveu o texto intacto — sintoma de `--source` errado |
+| `nao injetado` | havia tradução e o `inject` não a escreveu (não coube, ou foi recusada) |
+
 #### Quebra de linha (para a fala caber na tela)
 
 Texto PT-BR é mais comprido que o japonês e estoura a caixa de diálogo. Por isso o

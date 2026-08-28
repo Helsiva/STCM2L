@@ -21,7 +21,7 @@ from .core import (
     DATA_HEADER_SIZE, EXPORT_ENTRY_SIZE, EXPORT_NAME_SIZE, HEADER_SIZE, align4,
     build, parse, roundtrip_check,
 )
-from .pipeline import collect_entries, inject_file
+from .pipeline import collect_entries, inject_file, pendencias
 from .compare import compare
 from .textio import (
     classify_text, detect_encoding, dump_entries, load_entries, protect_tags, wrap_text,
@@ -519,6 +519,32 @@ def _check_fit(tmpdir: Path, log) -> bool:
         f"slots preservou={slots_preservou}, ponteiro ainda relocado="
         f"{ponteiro_ok} ({'OK' if modo_ok else 'FALHOU'})")
     ok &= modo_ok
+
+    # -- o que sobrou sem traduzir, e o motivo de cada caso -------------------
+    pdat = tmpdir / "pend.DAT"
+    pdat.write_bytes(make_otome_sample(inline, pool))
+    psc = parse(pdat.read_bytes())
+    pent = collect_entries(psc, "cp932")
+    falas = [e for e in pent if classify_text(e.original) == "cjk"]
+    falas[0].translation = "Traduzida de verdade."
+    falas[1].translation = ""                       # sem traducao
+    falas[2].translation = falas[2].original        # tradutor devolveu igual
+    pj = tmpdir / "pend.json"
+    dump_entries(pent, pj, pdat.name, "cp932", "json")
+    pout = tmpdir / "out" / "pend.DAT"
+    inject_file(pdat, pj, pout, out_encoding="utf-8")
+
+    pend, _ = pendencias(pout, pj)
+    vistos = {q.entry_id: q.motivo for q in pend}
+    motivos_vistos = set(vistos.values())
+    pend_ok = ("sem traducao" in motivos_vistos
+               and "traducao igual ao original" in motivos_vistos
+               # a que foi traduzida de verdade NAO pode aparecer como pendencia
+               and falas[0].id not in vistos)
+    log(f"[39] pending explica cada pendencia: {'OK' if pend_ok else 'FALHOU'}")
+    for q in pend[:4]:
+        log(f"     [{q.entry_id}] ({q.kind}) <- {q.motivo}")
+    ok &= pend_ok
     return bool(ok)
 
 

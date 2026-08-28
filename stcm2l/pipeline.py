@@ -433,6 +433,71 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
     return report
 
 
+@dataclass
+class Pendencia:
+    """Um texto que continua no idioma original dentro do arquivo JA injetado."""
+    entry_id: str
+    kind: str          # cjk | prose
+    texto: str
+    motivo: str
+
+
+def pendencias(patched: Path, texts_path: Path | None = None,
+               forced_encoding: str | None = None) -> tuple[list[Pendencia], int]:
+    """
+    O que ficou por traduzir num .DAT ja injetado, e o motivo de cada caso.
+
+    Rodar `extract` na saida diz O QUE sobrou; cruzar com o arquivo de traducao
+    diz POR QUE, que e o que permite corrigir:
+
+    - "nao foi extraido"   - o bloco nunca virou entrada (heuristica de texto o
+                             recusou, ou a codificacao nao o decodifica);
+    - "sem traducao"       - a entrada existe e o campo translation esta vazio
+                             (filtro do translate, ou o provedor pulou);
+    - "traducao igual"     - o tradutor devolveu o texto intacto. E o sintoma de
+                             mandar ingles com --source ja: o Google nao consegue
+                             ler aquilo como japones e devolve como veio;
+    - "nao injetado"       - havia traducao, mas o inject nao a escreveu.
+    """
+    script = parse(patched.read_bytes())
+    encoding = detect_encoding(script, forced_encoding)
+    restantes = collect_entries(script, encoding)
+
+    por_id: dict[str, TextEntry] = {}
+    if texts_path is not None and texts_path.exists():
+        entries, _ = load_entries(texts_path)
+        por_id = {e.id: e for e in entries}
+
+    out: list[Pendencia] = []
+    for entry in restantes:
+        kind = classify_text(entry.original)
+        if kind == "id":
+            continue
+        fonte = por_id.get(entry.id)
+        # bloco que JA carrega a traducao nao e pendencia - senao todo portugues
+        # injetado entraria na conta como "prosa latina nao traduzida". Mas
+        # traducao IGUAL ao original nao conta como feita: e justamente o caso
+        # do tradutor devolvendo o texto intacto, que continua pendente.
+        if (fonte is not None and fonte.translation.strip()
+                and fonte.translation.strip() != fonte.original.strip()):
+            atual = " ".join(entry.original.split())
+            feito = " ".join(fonte.translation.split())
+            if atual == feito:
+                continue
+        if texts_path is None:
+            motivo = ""
+        elif fonte is None:
+            motivo = "nao foi extraido"
+        elif not fonte.translation.strip():
+            motivo = "sem traducao"
+        elif fonte.translation.strip() == fonte.original.strip():
+            motivo = "traducao igual ao original"
+        else:
+            motivo = "nao injetado"
+        out.append(Pendencia(entry.id, kind, entry.original, motivo))
+    return out, len(restantes)
+
+
 # ---------------------------------------------------------------------------
 # verify
 # ---------------------------------------------------------------------------
