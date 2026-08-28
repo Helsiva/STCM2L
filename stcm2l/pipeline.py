@@ -168,6 +168,10 @@ class InjectReport:
     skip_id: int = 0
     #: True quando a saida tem exatamente o mesmo layout do original
     layout_preserved: bool = False
+    #: codificacao efetivamente usada para LER o .DAT
+    src_encoding: str = ""
+    #: (acertos, testados) do casamento entre o .json e o .DAT
+    match_originais: tuple[int, int] = (0, 0)
     problems: list[str] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -190,6 +194,54 @@ def _fix_length_params(script: Script, elem: int, old_lens: set[int], new_len: i
                 p[wi] = new_len
                 fixed += 1
     return fixed
+
+
+def _resolve_src_encoding(script: Script, entries: list[TextEntry],
+                          declared: str | None) -> tuple[str, int, int, str | None]:
+    """
+    Descobre em que codificacao LER o .DAT, medindo em vez de acreditar.
+
+    O criterio e direto: qual codificacao faz o texto do bloco bater com o
+    campo `original` do arquivo de traducao. A declarada no meta do .json pode
+    estar errada (o extract detectou torto, ou o .json veio de outro lote), e
+    acreditar nela transforma o arquivo inteiro em "texto original divergente"
+    - centenas de avisos apontando para o arquivo errado.
+
+    Devolve (codificacao, acertos, testados, aviso).
+    """
+    amostra = [e for e in entries if e.original][:300]
+    if not amostra:
+        return declared or detect_encoding(script), 0, 0, None
+
+    candidatas: list[str] = []
+    for enc in (declared, detect_encoding(script), "cp932", "utf-8", "utf-16-le"):
+        if enc and enc not in candidatas:
+            candidatas.append(enc)
+
+    def acertos(enc: str) -> int:
+        n = 0
+        for entry in amostra:
+            if not (0 <= entry.elem < len(script.elements)):
+                continue
+            el = script.elements[entry.elem]
+            if not (0 <= entry.seg < len(el.segments)):
+                continue
+            seg = el.segments[entry.seg]
+            if not isinstance(seg, DataBlock):
+                continue
+            if decode_block(seg.content, enc) == entry.original:
+                n += 1
+        return n
+
+    marcadas = [(acertos(enc), -i, enc) for i, enc in enumerate(candidatas)]
+    melhor, _, escolhida = max(marcadas)
+    aviso = None
+    if declared and escolhida != declared:
+        base = dict((enc, n) for n, _, enc in marcadas)
+        aviso = (f"o arquivo de traducao diz que o .DAT esta em '{declared}' "
+                 f"({base.get(declared, 0)} de {len(amostra)} textos batem), mas em "
+                 f"'{escolhida}' batem {melhor}. Lendo como '{escolhida}'.")
+    return escolhida, melhor, len(amostra), aviso
 
 
 def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
@@ -227,10 +279,21 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
     # O .DAT japones esta em cp932; a traducao PT-BR sai em utf-8. Decodificar o
     # bloco original com a codificacao de SAIDA faz o texto do .DAT "mudar" sem
     # ter mudado - e o aviso de divergencia dispara aos milhares, por engano.
-    src_encoding = meta.get("encoding") or detect_encoding(script)
+    src_encoding, acertos, testados, aviso_enc = _resolve_src_encoding(
+        script, entries, meta.get("encoding"))
     encoding = out_encoding or src_encoding
     nl = detect_newline(entries, None if newline == "auto" else newline)
     report = InjectReport(source=dat_path, output=out_path)
+    report.src_encoding = src_encoding
+    report.match_originais = (acertos, testados)
+    if aviso_enc:
+        report.problems.append(aviso_enc)
+    if testados and acertos == 0:
+        report.problems.append(
+            f"ERRO: NENHUM dos {testados} textos conferidos existe neste .DAT em "
+            f"codificacao nenhuma. Este .json nao corresponde a este arquivo - "
+            f"confira se o --texts e a mesma arvore que voce extraiu."
+        )
 
     for entry in entries:
         translation = entry.final

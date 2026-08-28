@@ -334,6 +334,25 @@ def _check_fit(tmpdir: Path, log) -> bool:
     for m in falsos[:3]:
         log(f"     ! {m}")
     ok &= enc_ok
+
+    # -- o meta do .json MENTINDO sobre a codificacao do .DAT. Acontece quando
+    #    o extract detecta torto: sem --out-encoding a leitura vinha do meta, e
+    #    o arquivo inteiro virava "texto original divergente".
+    mdump = tmpdir / "enc_meta.json"
+    dump_entries(dentries, mdump, ddat.name, "utf-8", "json")   # meta MENTE: e cp932
+    mout = tmpdir / "out" / "enc_meta.DAT"
+    mrep = inject_file(ddat, mdump, mout, fallback="ascii")     # sem --out-encoding
+    mfalsos = [m for m in mrep.problems if "divergente" in m]
+    avisou = any("diz que o .DAT esta em" in m for m in mrep.problems)
+    acertos, testados = mrep.match_originais
+    meta_ok = (mrep.src_encoding == "cp932" and not mfalsos and avisou
+               and acertos == testados and testados > 0)
+    log(f"[31] meta do .json mente a codificacao: lido como {mrep.src_encoding}, "
+        f"{acertos}/{testados} textos casam, aviso={avisou}, "
+        f"{len(mfalsos)} divergencias falsas ({'OK' if meta_ok else 'FALHOU'})")
+    for m in mrep.problems[:3]:
+        log(f"     - {m}")
+    ok &= meta_ok
     return bool(ok)
 
 

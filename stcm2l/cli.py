@@ -283,6 +283,10 @@ def cmd_inject(args: argparse.Namespace) -> int:
             (rep.overflow, "nao coube no bloco original (--fit)"),
             (rep.skip_alvo, "alvo invalido (elemento/segmento nao existe no .DAT)"),
         ]
+        acertos, testados = rep.match_originais
+        if testados and acertos < testados:
+            print(f"       o .json casa com {acertos}/{testados} textos conferidos do .DAT "
+                  f"(lido como {rep.src_encoding})")
         if rep.applied == 0 and rep.skipped:
             print(f"       NADA foi injetado neste arquivo. Motivo dos {rep.skipped} pulados:")
         for n, motivo in motivos:
