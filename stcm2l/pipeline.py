@@ -23,6 +23,7 @@ from .core import (
 KNOWN_TAGS = (TAG_CODE_START, TAG_CODE_END, TAG_GLOBAL_DATA)
 from .textio import (
     MAX_LINE_DEFAULT, TextEntry, classify_text, decode_block, detect_encoding,
+    encoding_report,
     detect_newline, dump_entries, encode_text, load_entries, looks_like_text,
     wrap_text,
 )
@@ -70,6 +71,11 @@ class Info:
     #: "cru" = pool de strings solto, tipicamente na cauda do arquivo)
     kinds: dict[str, int] = None  # type: ignore[assignment]
     where: dict[str, dict[str, int]] = None  # type: ignore[assignment]
+    #: (codificacao, blocos que ela le) para cada candidata, e o total de blocos
+    encoding_scores: list[tuple[str, int]] = None  # type: ignore[assignment]
+    encoding_total: int = 0
+    #: a mesma frase lida por cada candidata - mojibake fica obvio aqui
+    encoding_samples: list[dict[str, str]] = None  # type: ignore[assignment]
 
 
 def inspect(path: Path, forced_encoding: str | None = None) -> Info:
@@ -88,6 +94,7 @@ def inspect(path: Path, forced_encoding: str | None = None) -> Info:
             kind = classify_text(txt)
             kinds[kind] += 1
             where["acao" if script.elements[ei].kind == "action" else "cru"][kind] += 1
+    placar, total_blocos, exemplos = encoding_report(script)
     counter: Counter[int] = Counter(e.opcode for e in script.elements if e.kind == "action")
     return Info(
         path=path, size=len(data), magic=script.header.magic_text,
@@ -99,6 +106,7 @@ def inspect(path: Path, forced_encoding: str | None = None) -> Info:
         data_blocks=len(blocks), text_blocks=texts, encoding=encoding,
         opcodes=counter.most_common(12), warnings=list(script.warnings),
         kinds=kinds, where=where,
+        encoding_scores=placar, encoding_total=total_blocos, encoding_samples=exemplos,
     )
 
 

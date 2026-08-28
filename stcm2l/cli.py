@@ -110,6 +110,28 @@ def cmd_info(args: argparse.Namespace) -> int:
                 print(f"    {rotulo:<18} japones {w['cjk']} | prosa {w['prose']} | "
                       f"ids {w['id']}")
         print(f"  encoding ......... {nfo.encoding}")
+        if nfo.encoding_scores and nfo.encoding_total:
+            placar = "  ".join(f"{e}:{n}/{nfo.encoding_total}"
+                               for e, n in nfo.encoding_scores if n)
+            print(f"    cobertura ...... {placar}")
+            if nfo.encoding in ("cp1252", "latin-1"):
+                print(f"    ! {nfo.encoding} mapeia byte a byte e NUNCA falha - confira a "
+                      f"amostra abaixo antes de aceitar")
+        for i, exemplo in enumerate(nfo.encoding_samples or []):
+            if i == 0:
+                print("    mesma frase em cada codificacao:")
+            distintos, vistos = [], set()
+            for enc, txt in exemplo.items():
+                if txt in vistos:
+                    continue
+                vistos.add(txt)
+                distintos.append((enc, txt))
+            for enc, txt in distintos:
+                marca = "->" if enc == nfo.encoding else "  "
+                corte = txt if len(txt) <= 58 else txt[:58] + "..."
+                print(f"      {marca} {enc:<9} {corte!r}")
+            if i < len(nfo.encoding_samples) - 1:
+                print()
         if nfo.opcodes:
             top = "  ".join(f"0x{op:X}x{n}" for op, n in nfo.opcodes)
             print(f"  opcodes (top) .... {top}")

@@ -128,6 +128,35 @@ _PONTUACAO_LATINA = {
 _TABELA_PONTUACAO = str.maketrans(_PONTUACAO_LATINA)
 
 
+def encoding_report(script: Script, amostras: int = 3
+                    ) -> tuple[list[tuple[str, int]], int, list[dict[str, str]]]:
+    """
+    Quanto cada codificacao candidata cobre do arquivo, e a MESMA frase lida por
+    cada uma.
+
+    A pontuacao sozinha engana: cp1252 e latin-1 nunca falham, entao empatam ou
+    ganham de uma estrita mesmo transformando o roteiro em mojibake. Ver o texto
+    decodificado lado a lado resolve na hora - '\u767a\u8a00\u8005\u540d' contra
+    '\u201d\xad\u0152\xbe\u017d\xd2\u2013\xbc' nao deixa duvida sobre qual esta certa.
+    """
+    blobs = [db.content for _, _, db in script.iter_data_blocks() if db.content]
+    placar: list[tuple[str, int]] = []
+    for enc in CANDIDATE_ENCODINGS:
+        n = sum(1 for raw in blobs
+                if (txt := decode_block(raw, enc)) is not None and looks_like_text(txt))
+        placar.append((enc, n))
+
+    # amostra: os blocos mais longos, que e onde mojibake fica obvio
+    exemplos: list[dict[str, str]] = []
+    for raw in sorted(blobs, key=len, reverse=True)[:amostras]:
+        linha = {}
+        for enc in CANDIDATE_ENCODINGS:
+            txt = decode_block(raw, enc)
+            linha[enc] = txt if txt is not None else "(nao decodifica)"
+        exemplos.append(linha)
+    return placar, len(blobs), exemplos
+
+
 def encode_text(text: str, encoding: str, fallback: str = "strict") -> bytes:
     """
     Codifica o texto traduzido.
