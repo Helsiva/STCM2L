@@ -292,6 +292,39 @@ def cmd_inject(args: argparse.Namespace) -> int:
     return 1 if fails else 0
 
 
+def _pair_dat(dat: Path, root: Path) -> Path | None:
+    """
+    Encontra o .DAT injetado que corresponde a `dat`.
+
+    Tolera o que muda no caminho de volta do jogo: caixa da extensao (.DAT/.dat),
+    subpasta espelhada e nome com sufixo (`NO00_ptbr.DAT`). Casa pelo NOME BASE,
+    nunca por posicao na lista - comparar arquivo trocado daria diff falso.
+    """
+    if root.is_file():
+        return root
+    if not root.is_dir():
+        return None
+    alvo = root / dat.name
+    if alvo.exists():
+        return alvo
+    stem = dat.stem.lower()
+    exatos, prefixos = [], []
+    for cand in root.rglob("*"):
+        if not cand.is_file():
+            continue
+        cs = cand.stem.lower()
+        if cs == stem:
+            exatos.append(cand)
+        elif cs.startswith(stem):
+            prefixos.append(cand)
+    for lista in (exatos, prefixos):
+        if len(lista) == 1:
+            return lista[0]
+        if len(lista) > 1:
+            return sorted(lista)[0]
+    return None
+
+
 def cmd_compare(args: argparse.Namespace) -> int:
     src = Path(args.input)
     patched = Path(args.patched)
@@ -300,16 +333,13 @@ def cmd_compare(args: argparse.Namespace) -> int:
         print("nenhum arquivo encontrado.")
         return 1
     sujos = 0
+    sem_par = 0
     for path in files:
-        alvo = patched if patched.is_file() else None
+        alvo = _pair_dat(path, patched)
         if alvo is None:
-            alvo = patched / path.name
-            if not alvo.exists():
-                achado = next(patched.rglob(path.name), None)
-                if achado is None:
-                    print(f"[PULA] {path.name}: sem par em {patched}")
-                    continue
-                alvo = achado
+            print(f"[PULA] {path.name}: sem par em {patched}")
+            sem_par += 1
+            continue
         try:
             rep = compare(path, alvo)
         except Stcm2lError as exc:
@@ -354,7 +384,27 @@ def cmd_compare(args: argparse.Namespace) -> int:
             sujos += 1
 
     total = len(files)
-    print(f"\n{total - sujos}/{total} arquivos mudaram SO o que deviam.")
+    if sem_par == total:
+        print(f"\nNENHUM dos {total} arquivos de {src} tem par em {patched}.")
+        if not patched.exists():
+            print(f"A pasta {patched} nem existe - confira o caminho do -o que voce usou "
+                  f"no inject.")
+        else:
+            achados = sorted(q for q in patched.rglob("*") if q.is_file())
+            if not achados:
+                print(f"A pasta {patched} esta vazia: o inject nao gravou nada ali "
+                      f"(ou gravou em outro -o).")
+            else:
+                print(f"O que existe em {patched} ({len(achados)} arquivo(s)):")
+                for q in achados[:10]:
+                    print(f"    {q.relative_to(patched)}")
+                if len(achados) > 10:
+                    print(f"    ... e mais {len(achados) - 10}")
+                print("Os nomes precisam bater com os originais. Se voce injetou OUTRA pasta "
+                      "de scripts, aponte o 'input' para a mesma que usou no inject.")
+        return 1
+    print(f"\n{total - sujos - sem_par}/{total - sem_par} arquivos mudaram SO o que deviam."
+          + (f" ({sem_par} sem par)" if sem_par else ""))
     if sujos:
         print("Arquivo com identificador alterado ou word suspeito e o primeiro suspeito de "
               "roteiro travado. Reinjete com --fit para eliminar a relocacao inteira.")
