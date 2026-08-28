@@ -28,7 +28,7 @@ from .compare import compare
 from .core import SlotVerdict, Stcm2lError, parse, slot_verdicts
 from .pipeline import (
     DAT_SUFFIXES, Pendencia, extract_file, inject_file, inspect, iter_inputs,
-    pendencias, verify_file,
+    patch_regua, pendencias, verify_file,
 )
 from .shorten import (
     ESFORCO_PADRAO, PROVEDORES, ResumoEncurtamento, fazer_chamador,
@@ -795,6 +795,33 @@ def cmd_shorten(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ruler(args: argparse.Namespace) -> int:
+    """Injeta reguas de medicao para ler a caixa de texto no jogo."""
+    src = Path(args.input)
+    out = Path(args.output)
+    if out.resolve() == src.resolve():
+        print("ERRO: a saida sobrescreveria o original. Use outro caminho.")
+        return 1
+    try:
+        trocadas = patch_regua(src, out, args.count, args.encoding)
+    except Stcm2lError as exc:
+        print(f"[ERRO] {src.name}: {exc}")
+        return 1
+    if not trocadas:
+        print(f"{src.name}: nenhuma fala encontrada para trocar pela regua.")
+        return 1
+    print(f"[ OK ] {src.name}: {len(trocadas)} falas trocadas por regua -> {out}\n")
+    for eid, regua in trocadas:
+        print(f"  [{eid}] {regua!r}")
+    print("\nColoque este arquivo no jogo e leia na tela:")
+    print("  1. a regua de COLUNAS corta em que numero? -> esse e o --max-line real")
+    print("  2. a regua de LINHAS mostra ate qual L? -> esse e o --max-lines real")
+    print("  3. as linhas L1..L5 aparecem separadas? Se sairem TODAS emendadas numa")
+    print("     linha so, a engine ignora a nossa quebra e quebra sozinha - ai o")
+    print("     criterio passa a ser comprimento total, nao numero de linhas.")
+    return 0
+
+
 def cmd_selftest(args: argparse.Namespace) -> int:
     from .selftest import run
     return 0 if run() else 1
@@ -961,6 +988,13 @@ def build_parser() -> argparse.ArgumentParser:
                          "lote no fim. Para varrer uma arvore inteira sem afogar o terminal.")
     common(sp)
     sp.set_defaults(func=cmd_compare)
+
+    sp = sub.add_parser("ruler", help="injeta reguas para MEDIR a caixa de texto no jogo")
+    sp.add_argument("input", help="um .DAT do comeco do jogo (prologo)")
+    sp.add_argument("-o", "--output", required=True, help=".DAT de saida com as reguas")
+    sp.add_argument("--count", type=int, default=6, help="quantas falas trocar")
+    sp.add_argument("--encoding", help="forca a codificacao de leitura")
+    sp.set_defaults(func=cmd_ruler)
 
     sp = sub.add_parser("shorten", help="encurta com IA a fala que nao cabe na caixa")
     sp.add_argument("input", help="arquivo .json/.txt traduzido ou pasta com eles")

@@ -514,6 +514,51 @@ def pendencias(patched: Path, texts_path: Path | None = None,
     return out, len(restantes)
 
 
+#: régua de largura: cada digito marca a coluna, entao da para ler no jogo em que
+#: coluna a caixa corta sem contar caractere na tela
+REGUA_LARGURA = "....5...10...15...20...25...30...35...40...45...50...55...60"
+
+#: régua de altura: quantas linhas a caixa mostra, e se a engine respeita a
+#: quebra que a gente escreve ou quebra sozinha
+REGUA_ALTURA = "L1-aaaa\nL2-bbbb\nL3-cccc\nL4-dddd\nL5-eeee"
+
+
+def patch_regua(dat_path: Path, out_path: Path, quantidade: int = 6,
+                forced_encoding: str | None = None) -> list[tuple[str, str]]:
+    """
+    Troca as primeiras falas do arquivo por reguas de medicao.
+
+    Duas perguntas que nenhuma conta feita aqui responde, porque dependem da
+    fonte e da engine: **em que coluna a caixa corta** e **quantas linhas ela
+    mostra** - mais uma terceira de brinde, se a engine respeita a quebra que
+    escrevemos ou quebra o texto sozinha. Ler isso na tela resolve as tres de
+    uma vez, e sem isso o --max-line e chute.
+
+    As falas alternam entre a regua de largura e a de altura. Devolve
+    [(id, regua)] do que foi trocado.
+    """
+    data = dat_path.read_bytes()
+    script = parse(data)
+    encoding = detect_encoding(script, forced_encoding)
+    trocadas: list[tuple[str, str]] = []
+
+    for elem, seg, db in script.iter_data_blocks():
+        if len(trocadas) >= quantidade:
+            break
+        texto = decode_block(db.content, encoding)
+        if texto is None or not looks_like_text(texto):
+            continue
+        if classify_text(texto) == "id" or len(texto.strip()) < 6:
+            continue
+        regua = REGUA_LARGURA if len(trocadas) % 2 == 0 else REGUA_ALTURA
+        db.set_content(encode_text(regua, encoding, fallback="ascii"))
+        trocadas.append((TextEntry.make_id(elem, seg), regua))
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(build(script))
+    return trocadas
+
+
 # ---------------------------------------------------------------------------
 # verify
 # ---------------------------------------------------------------------------
