@@ -383,6 +383,8 @@ def cmd_compare(args: argparse.Namespace) -> int:
         return 1
     sujos = 0
     sem_par = 0
+    com_estrutura = com_ids = com_suspeitos = com_isolados = 0
+    agregado: dict[tuple[int, int, int], tuple[int, int]] = {}
     for path in files:
         alvo = _pair_dat(path, patched)
         if alvo is None:
@@ -442,6 +444,17 @@ def cmd_compare(args: argparse.Namespace) -> int:
                 print(f"           [{t.elem}:{t.seg}] ({t.kind}) {t.old!r} -> {t.new!r}")
         if not rep.clean:
             sujos += 1
+        if rep.structural:
+            com_estrutura += 1
+        if rep.id_changes:
+            com_ids += 1
+        if rep.suspects:
+            com_suspeitos += 1
+        if rep.isolados:
+            com_isolados += 1
+        for t in rep.slots:
+            r, i = agregado.get((t.opcode, t.pi, t.wi), (0, 0))
+            agregado[(t.opcode, t.pi, t.wi)] = (r + t.relocados, i + t.instancias)
 
     total = len(files)
     if sem_par == total:
@@ -466,8 +479,26 @@ def cmd_compare(args: argparse.Namespace) -> int:
     print(f"\n{total - sujos - sem_par}/{total - sem_par} arquivos mudaram SO o que deviam."
           + (f" ({sem_par} sem par)" if sem_par else ""))
     if sujos:
-        print("Arquivo com identificador alterado ou word suspeito e o primeiro suspeito de "
-              "roteiro travado. Reinjete com --fit para eliminar a relocacao inteira.")
+        print(f"  arquivos com mudanca estrutural ... {com_estrutura}")
+        print(f"  arquivos com identificador trocado  {com_ids}")
+        print(f"  arquivos com word suspeito ....... {com_suspeitos}")
+        print(f"  arquivos com slot isolado ........ {com_isolados}")
+    if agregado:
+        # a razao do lote inteiro decide melhor que a de um arquivo so: um slot
+        # que e ponteiro de verdade fica alto somando 279 arquivos, e uma
+        # coincidencia continua rasteira
+        linhas = sorted(((r / i if i else 0.0), r, i, k) for k, (r, i) in agregado.items())
+        print("\n  relocacao por slot no lote inteiro (opcode, parametro, word):")
+        for razao, r, i, (op, pi, wi) in linhas[:args.limit]:
+            marca = "  ISOLADO" if razao < 0.25 else ""
+            print(f"    0x{op:<8X} param {pi} word {wi}: {r}/{i} = {razao:6.1%}{marca}")
+        if len(linhas) > args.limit:
+            print(f"    ... e mais {len(linhas) - args.limit} slots (--limit para ver mais)")
+        print("  Slot com razao ALTA e ponteiro de verdade. Razao rasteira em MUITOS "
+              "arquivos costuma ser ponteiro condicional; rasteira em poucos e coincidencia.")
+    if sujos:
+        print("\nReinjete com --fit para eliminar a relocacao inteira, ou mande esta saida "
+              "para analise antes de aceitar o patch que cresceu.")
     return 1 if sujos else 0
 
 
