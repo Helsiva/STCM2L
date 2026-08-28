@@ -385,6 +385,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
     sem_par = 0
     com_estrutura = com_ids = com_suspeitos = com_isolados = 0
     agregado: dict[tuple[int, int, int], tuple[int, int]] = {}
+    vereditos_lote: dict[tuple[int, int, int], str] = {}
     for path in files:
         alvo = _pair_dat(path, patched)
         if alvo is None:
@@ -428,6 +429,10 @@ def cmd_compare(args: argparse.Namespace) -> int:
             for t in rep.slots:
                 r, i = agregado.get((t.opcode, t.pi, t.wi), (0, 0))
                 agregado[(t.opcode, t.pi, t.wi)] = (r + t.relocados, i + t.instancias)
+            for chave, vd in rep.vereditos.items():
+                vereditos_lote.setdefault(chave, vd)
+                if vd == "ponteiro":
+                    vereditos_lote[chave] = vd
             continue
         print(f"       tamanho    {rep.size_a} -> {rep.size_b} ({delta:+d} bytes)"
               + ("   [layout preservado]" if delta == 0 else ""))
@@ -483,6 +488,10 @@ def cmd_compare(args: argparse.Namespace) -> int:
         for t in rep.slots:
             r, i = agregado.get((t.opcode, t.pi, t.wi), (0, 0))
             agregado[(t.opcode, t.pi, t.wi)] = (r + t.relocados, i + t.instancias)
+        for chave, vd in rep.vereditos.items():
+            vereditos_lote.setdefault(chave, vd)
+            if vd == "ponteiro":
+                vereditos_lote[chave] = vd
 
     total = len(files)
     if sem_par == total:
@@ -517,13 +526,23 @@ def cmd_compare(args: argparse.Namespace) -> int:
         # coincidencia continua rasteira
         linhas = sorted(((r / i if i else 0.0), r, i, k) for k, (r, i) in agregado.items())
         print("\n  relocacao por slot no lote inteiro (opcode, parametro, word):")
+        print("    razao = relocadas/instancias | veredito = acertos/CANDIDATAS, "
+              "medido nos originais")
         for razao, r, i, (op, pi, wi) in linhas[:args.limit]:
-            marca = "  ISOLADO" if razao < 0.25 else ""
+            vd = vereditos_lote.get((op, pi, wi), "?")
+            if vd == "ponteiro":
+                marca = "  ponteiro (relocacao correta)"
+            elif razao < 0.25:
+                marca = f"  ISOLADO + {vd}"
+            else:
+                marca = f"  {vd}"
             print(f"    0x{op:<8X} param {pi} word {wi}: {r}/{i} = {razao:6.1%}{marca}")
         if len(linhas) > args.limit:
             print(f"    ... e mais {len(linhas) - args.limit} slots (--limit para ver mais)")
-        print("  Slot com razao ALTA e ponteiro de verdade. Razao rasteira em MUITOS "
-              "arquivos costuma ser ponteiro condicional; rasteira em poucos e coincidencia.")
+        print("  'ponteiro' = quase toda candidata acerta um endereco: relocar esta certo, "
+              "mesmo com razao baixa.\n"
+              "  'acaso'    = acerta na proporcao do acaso: e imediato do jogo sendo "
+              "reescrito. Use --relocate slots.")
     if sujos:
         print("\nReinjete com --fit para eliminar a relocacao inteira, ou mande esta saida "
               "para analise antes de aceitar o patch que cresceu.")

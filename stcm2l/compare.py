@@ -27,7 +27,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .core import DataBlock, RawSegment, Script, parse
+from .core import DataBlock, RawSegment, Script, parse, slot_verdicts
 from .textio import classify_text, decode_block, detect_encoding
 
 
@@ -98,6 +98,8 @@ class CompareReport:
     texts: list[TextDiff] = field(default_factory=list)
     words: list[WordDiff] = field(default_factory=list)
     slots: list[SlotStat] = field(default_factory=list)
+    #: veredito do slot medido no ORIGINAL: ponteiro | acaso | duvidoso
+    vereditos: dict[tuple[int, int, int], str] = field(default_factory=dict)
     encoding: str = "utf-8"
 
     @property
@@ -114,8 +116,17 @@ class CompareReport:
 
     @property
     def isolados(self) -> list[SlotStat]:
-        """Slots relocados raramente - candidatos a imediato reescrito por engano."""
-        return [s for s in self.slots if 0 < s.razao < RAZAO_SUSPEITA]
+        """
+        Slots relocados raramente E que nao passaram no teste de ponteiro.
+
+        Razao baixa sozinha nao acusa nada: um slot pode ser relocado em 5% das
+        instancias simplesmente porque nas outras 95% ele guarda 0 ou um numero
+        pequeno, que nem chega a ser candidato a endereco. Quem decide e o
+        veredito medido no original - acertos sobre CANDIDATAS.
+        """
+        return [s for s in self.slots
+                if 0 < s.razao < RAZAO_SUSPEITA
+                and self.vereditos.get((s.opcode, s.pi, s.wi)) != "ponteiro"]
 
     @property
     def clean(self) -> bool:
@@ -270,6 +281,7 @@ def compare(original: Path, patched: Path) -> CompareReport:
     for w in rep.words:
         if w.opcode is not None and w.pi >= 0:
             relocados[(w.opcode, w.pi, w.wi)] += 1
+    rep.vereditos = {k: v.veredito for k, v in slot_verdicts(a).items()}
     rep.slots = sorted(
         (SlotStat(op, pi, wi, n, instancias[(op, pi, wi)])
          for (op, pi, wi), n in relocados.items()),
