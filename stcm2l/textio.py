@@ -216,6 +216,146 @@ def classify_text(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Quebra de linha (caixa de texto do jogo)
+# ---------------------------------------------------------------------------
+
+#: as duas formas de quebra que aparecem dentro do payload de texto do STCM2L
+NEWLINE_LF = "\n"          # o byte 0x0A embutido no texto
+NEWLINE_LITERAL = "\\n"    # barra-invertida + n, lidos pela engine
+
+#: limite padrao de largura da caixa de texto, em colunas
+MAX_LINE_DEFAULT = 50
+
+#: quebras ja presentes no texto (o grupo captura para preservar a forma original)
+_SPLIT_NEWLINE_RE = re.compile(r"(\\n|\r\n|\n|\r)")
+
+_ESPACOS_RE = re.compile(r"(\s+)")
+
+
+def visible_width(text: str) -> int:
+    """
+    Largura aproximada do texto na tela, em colunas.
+
+    Marcadores ja trocados por placeholders (protect_tags) nao ocupam coluna
+    nenhuma - o jogo nao os desenha. Kana/kanji ocupam duas.
+    """
+    total = 0
+    for ch in _PH_RE.sub("", text):
+        total += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return total
+
+
+def detect_newline(entries: Iterable["TextEntry"], forced: str | None = None) -> str:
+    """
+    Descobre como este script representa a quebra de linha.
+
+    forced="lf" / "literal" forcam a escolha; "auto" (ou None) olha o texto
+    ORIGINAL das entradas e vence a forma mais frequente. Sem nenhuma quebra no
+    arquivo, o padrao e o LF real.
+
+    ATENCAO: no formato .txt as duas formas viram LF real na leitura (unesc),
+    entao a deteccao so e confiavel a partir do .json.
+    """
+    if forced == "lf":
+        return NEWLINE_LF
+    if forced == "literal":
+        return NEWLINE_LITERAL
+    literal = real = 0
+    for e in entries:
+        original = getattr(e, "original", "") or ""
+        literal += original.count(NEWLINE_LITERAL)
+        real += original.count(NEWLINE_LF)
+    return NEWLINE_LITERAL if literal > real else NEWLINE_LF
+
+
+def _wrap_segment(segment: str, max_line: int, newline: str) -> str:
+    """Quebra um trecho que ja nao contem nenhuma quebra de linha."""
+    if not segment.strip():
+        return segment
+
+    protected, tags = protect_tags(segment)
+    linhas: list[str] = []
+    atual = ""
+    largura = 0
+    espaco = ""
+
+    for tok in _ESPACOS_RE.split(protected):
+        if not tok:
+            continue
+        if tok.isspace():
+            espaco += tok
+            continue
+        w = visible_width(tok)
+        gap = visible_width(espaco)
+        if atual and largura + gap + w > max_line:
+            linhas.append(atual)
+            atual, largura = tok, w      # o espaco do ponto de quebra e consumido
+        else:
+            atual += espaco + tok
+            largura += gap + w
+        espaco = ""
+
+    atual += espaco                      # espaco no fim do trecho: preserva
+    linhas.append(atual)
+    restaurado, _ok = restore_tags(newline.join(linhas), tags)
+    return restaurado
+
+
+def wrap_text(text: str, max_line: int = MAX_LINE_DEFAULT,
+              newline: str = NEWLINE_LF) -> str:
+    """
+    Quebra a fala a cada `max_line` colunas visiveis para caber na caixa de texto.
+
+    - identificadores da engine (`NO00_0012`, `bgm.at9`) saem INTACTOS: quebrar
+      um deles faz o jogo perder o recurso;
+    - marcadores (`#Name[2]`, `{var}`, `%VAR%`, `\\n`) nunca sao partidos ao meio
+      nem contam na largura, porque nao aparecem na tela;
+    - quebras que o texto ja tinha sao preservadas na forma em que estavam;
+    - uma palavra sozinha maior que o limite estoura a linha em vez de ser
+      partida no meio.
+
+    max_line <= 0 desliga a quebra. A funcao e idempotente.
+    """
+    if max_line <= 0 or not text.strip():
+        return text
+    if classify_text(text) == "id":
+        return text
+
+    pedacos = _SPLIT_NEWLINE_RE.split(text)
+    return "".join(
+        pedaco if i % 2 else _wrap_segment(pedaco, max_line, newline)
+        for i, pedaco in enumerate(pedacos)
+    )
+
+
+
+def wrap_entries(entries: Iterable["TextEntry"], max_line: int = MAX_LINE_DEFAULT,
+                 newline: str | None = None, forced: str | None = None) -> int:
+    """
+    Aplica wrap_text() no campo `translation` das entradas ja traduzidas.
+
+    O texto ORIGINAL nunca e tocado: entrada sem traducao fica exatamente como
+    esta. `newline` fixa a forma da quebra; sem ele, detect_newline() decide a
+    partir dos originais (respeitando `forced`).
+
+    Retorna quantas entradas ganharam pelo menos uma quebra.
+    """
+    itens = list(entries)
+    if max_line <= 0:
+        return 0
+    nl = newline or detect_newline(itens, forced)
+    mudou = 0
+    for e in itens:
+        if not e.translation.strip():
+            continue
+        novo = wrap_text(e.translation, max_line, nl)
+        if novo != e.translation:
+            e.translation = novo
+            mudou += 1
+    return mudou
+
+
+# ---------------------------------------------------------------------------
 # Entrada de texto
 # ---------------------------------------------------------------------------
 

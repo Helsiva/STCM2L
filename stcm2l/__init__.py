@@ -19,7 +19,8 @@ from .pipeline import (
     collect_entries, extract_file, inject_file, inspect, iter_inputs, verify_file,
 )
 from .textio import (
-    TextEntry, detect_encoding, dump_entries, load_entries, protect_tags, restore_tags,
+    MAX_LINE_DEFAULT, TextEntry, detect_encoding, detect_newline, dump_entries,
+    load_entries, protect_tags, restore_tags, visible_width, wrap_entries, wrap_text,
 )
 
 __version__ = "1.0.0"
@@ -31,5 +32,7 @@ __all__ = [
     "inspect", "verify_file", "extract_file", "inject_file",
     "collect_entries", "iter_inputs",
     "TextEntry", "detect_encoding", "dump_entries", "load_entries",
-    "protect_tags", "restore_tags", "__version__",
+    "protect_tags", "restore_tags",
+    "wrap_text", "wrap_entries", "visible_width", "detect_newline",
+    "MAX_LINE_DEFAULT", "__version__",
 ]

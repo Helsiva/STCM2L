@@ -32,7 +32,10 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from .core import Stcm2lError
-from .textio import TextEntry, classify_text, protect_tags, restore_tags
+from .textio import (
+    MAX_LINE_DEFAULT, TextEntry, classify_text, protect_tags, restore_tags,
+    wrap_entries,
+)
 
 DEEPL_FREE = "https://api-free.deepl.com/v2/translate"
 DEEPL_PRO = "https://api.deepl.com/v2/translate"
@@ -367,12 +370,21 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
                       delay: float = 1.0,
                       cache_path: Path | None = None, overwrite: bool = False,
                       only_cjk: bool = False, skip_ids: bool = False,
+                      max_line: int = MAX_LINE_DEFAULT, newline: str = "auto",
                       log: Callable[[str], None] = print) -> int:
     """
     Traduz in-place o campo `translation` das entradas. Retorna quantas foram
     efetivamente traduzidas. Textos identicos sao traduzidos uma unica vez.
+
+    No fim, quebra as falas traduzidas em linhas de ate `max_line` colunas para
+    caberem na caixa de texto do jogo (`max_line=0` desliga). A passada cobre
+    TODAS as entradas com traducao, nao so as desta corrida, para que o que veio
+    do cache ou de uma revisao manual tambem seja quebrado.
     """
     if provider == "none":
+        # sem tradutor, mas a quebra de linha continua valendo: e assim que se
+        # re-quebra um .json ja traduzido depois de editar a mao
+        _aplicar_quebra(entries, max_line, newline, log)
         return 0
     if provider in ("deepl", "deepl-pro", "google") and not api_key:
         raise TranslationError(f"o provedor '{provider}' exige --api-key")
@@ -476,7 +488,18 @@ def translate_entries(entries: list[TextEntry], provider: str, api_key: str | No
         done += 1
 
     _salvar_cache(cache_path, cache)
+    _aplicar_quebra(entries, max_line, newline, log)
     return done
+
+
+def _aplicar_quebra(entries: list[TextEntry], max_line: int, newline: str,
+                    log: Callable[[str], None]) -> None:
+    if max_line <= 0:
+        return
+    forced = None if newline == "auto" else newline
+    n = wrap_entries(entries, max_line=max_line, forced=forced)
+    if n:
+        log(f"  {n} falas quebradas em linhas de ate {max_line} colunas")
 
 
 def _salvar_cache(cache_path: Path | None, cache: dict[str, str],

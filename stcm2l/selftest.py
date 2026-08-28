@@ -21,7 +21,7 @@ from .core import (
     build, parse, roundtrip_check,
 )
 from .pipeline import collect_entries, inject_file
-from .textio import detect_encoding, dump_entries, load_entries
+from .textio import detect_encoding, dump_entries, load_entries, protect_tags, wrap_text
 
 
 def _data_block(text: str, encoding: str) -> bytes:
@@ -131,14 +131,14 @@ def _check_otome(tmpdir: Path, log) -> bool:
     ok = True
 
     same, detail = roundtrip_check(dat.read_bytes())
-    log(f"[13] otome: round-trip byte-a-byte: {'OK' if same else 'FALHOU'} ({detail})")
+    log(f"[18] otome: round-trip byte-a-byte: {'OK' if same else 'FALHOU'} ({detail})")
     ok &= same
 
     script = parse(dat.read_bytes())
     entries = collect_entries(script, "cp932")
     got = [e.original for e in entries]
     text_ok = got == inline + pool
-    log(f"[14] otome: {len(entries)} textos extraidos "
+    log(f"[19] otome: {len(entries)} textos extraidos "
         f"({'OK' if text_ok else 'FALHOU'}) - inclui o pool da cauda")
     if not text_ok:
         log(f"     esperado={inline + pool}\n     obtido  ={got}")
@@ -152,15 +152,16 @@ def _check_otome(tmpdir: Path, log) -> bool:
     report = inject_file(dat, texts_file, out_dat, out_encoding="utf-8")
     inj_ok = report.applied == len(entries) and not any(
         p.startswith("ERRO") for p in report.problems)
-    log(f"[15] otome: injecao: {report.applied} aplicados, "
+    log(f"[20] otome: injecao: {report.applied} aplicados, "
         f"{report.grown} maiores ({'OK' if inj_ok else 'FALHOU'})")
     ok &= inj_ok
 
     new = parse(out_dat.read_bytes())
     got = [e.original for e in collect_entries(new, "utf-8")]
-    want = [e.translation for e in entries]
+    want = [wrap_text(e.translation) for e in entries]
     text_ok = got == want
-    log(f"[16] otome: textos apos injecao: {'OK' if text_ok else 'FALHOU'}")
+    log(f"[21] otome: textos apos injecao (ja quebrados em 50): "
+        f"{'OK' if text_ok else 'FALHOU'}")
     ok &= text_ok
 
     # os ponteiros para o pool da cauda tem que seguir o pool que se moveu
@@ -168,13 +169,13 @@ def _check_otome(tmpdir: Path, log) -> bool:
     for ei, si, db in new.iter_data_blocks():
         el = new.elements[ei]
         destinos[el.offset + el.segment_rel(si)] = db.content.decode("utf-8")
-    esperado = [e.translation for e in entries[len(inline):]]
+    esperado = [wrap_text(e.translation) for e in entries[len(inline):]]
     apontados = []
     for el in new.elements:
         if el.kind == "action" and el.params and el.params[0][0]:
             apontados.append(destinos.get(el.params[0][0]))
     ptr_ok = bool(apontados) and all(a in esperado for a in apontados)
-    log(f"[17] otome: ponteiros para o pool da cauda: {'OK' if ptr_ok else 'FALHOU'}")
+    log(f"[22] otome: ponteiros para o pool da cauda: {'OK' if ptr_ok else 'FALHOU'}")
     if not ptr_ok:
         log(f"     apontados={apontados}\n     esperado={esperado}")
     ok &= ptr_ok
@@ -248,10 +249,12 @@ def run(verbose: bool = True) -> bool:
             # 5) reabre e confere textos + ponteiros
             new = parse(out_dat.read_bytes())
             new_entries = collect_entries(new, "utf-8")
-            want = [e.translation for e in entries]
+            # o inject quebra as falas em 50 colunas por padrao
+            want = [wrap_text(e.translation) for e in entries]
             got = [e.original for e in new_entries]
             text_ok = got == want
-            log(f"[5] textos apos injecao: {'OK' if text_ok else 'FALHOU'}")
+            log(f"[5] textos apos injecao (ja quebrados em 50): "
+                f"{'OK' if text_ok else 'FALHOU'}")
             if not text_ok:
                 log(f"    esperado={want}\n    obtido  ={got}")
             ok &= text_ok
@@ -297,7 +300,7 @@ def run(verbose: bool = True) -> bool:
         ok &= txt_ok
 
         # 8) protecao de marcadores
-        from .textio import protect_tags, restore_tags
+        from .textio import restore_tags
         src = "#Name[2]「テスト」#KW_F[]\n{item} %GOLD% \\n fim"
         prot, tags = protect_tags(src)
         rest, tag_ok = restore_tags(prot, tags)
@@ -339,6 +342,64 @@ def run(verbose: bool = True) -> bool:
         if not cp932_ok:
             log(f"     {dobrada!r}")
         ok &= cp932_ok
+
+        # 12) quebra de linha para caber na caixa de texto
+        from .textio import NEWLINE_LITERAL, detect_newline, visible_width
+
+        def _largura_max(texto: str, quebra: str = "\n") -> int:
+            linhas = texto.split(quebra)
+            return max(visible_width(protect_tags(l)[0]) for l in linhas)
+
+        fala = ("#Name[2]Eu nao consigo acreditar que voce realmente veio ate aqui "
+                "so para me ver, depois de tudo o que aconteceu ontem. #KW_ED[]")
+        quebrada = wrap_text(fala, 50)
+        largura_ok = _largura_max(quebrada) <= 50
+        tags_ok = "#Name[2]" in quebrada and "#KW_ED[]" in quebrada
+        palavras_ok = quebrada.split() == fala.split()      # nada perdido nem partido
+        log(f"[13] quebra em 50 colunas (largura={_largura_max(quebrada)}, "
+            f"marcadores inteiros, palavras intactas): "
+            f"{'OK' if largura_ok and tags_ok and palavras_ok else 'FALHOU'}")
+        if not (largura_ok and tags_ok and palavras_ok):
+            log(f"     {quebrada!r}")
+        ok &= largura_ok and tags_ok and palavras_ok
+
+        preexistente = ("Curta.\nUma segunda linha bem mais comprida do que caberia "
+                        "na caixa de texto do jogo.")
+        pre = wrap_text(preexistente, 50)
+        pre_ok = (pre.split("\n")[0] == "Curta." and _largura_max(pre) <= 50
+                  and pre.count("\n") > preexistente.count("\n"))
+        log(f"[14] quebras que ja existiam sao preservadas: "
+            f"{'OK' if pre_ok else 'FALHOU'}")
+        if not pre_ok:
+            log(f"     {pre!r}")
+        ok &= pre_ok
+
+        ids = ["NO00_0012", "bgm_theme_01.at9", "SYSTEM_GLOBAL"]
+        id_ok = all(wrap_text(i, 5) == i for i in ids)
+        log(f"[15] identificadores da engine nunca sao quebrados: "
+            f"{'OK' if id_ok else 'FALHOU'}")
+        ok &= id_ok
+
+        idem_ok = wrap_text(quebrada, 50) == quebrada
+        lit = wrap_text(fala, 50, NEWLINE_LITERAL)
+        lit_ok = (NEWLINE_LITERAL in lit and "\n" not in lit
+                  and _largura_max(lit, NEWLINE_LITERAL) <= 50
+                  and wrap_text(lit, 50, NEWLINE_LITERAL) == lit)
+        log(f"[16] idempotencia e modo \\n literal: "
+            f"{'OK' if idem_ok and lit_ok else 'FALHOU'}")
+        if not (idem_ok and lit_ok):
+            log(f"     idem={idem_ok} literal={lit!r}")
+        ok &= idem_ok and lit_ok
+
+        class _E:
+            def __init__(self, original): self.original = original
+        nl_ok = (detect_newline([_E("a\nb"), _E("c\nd")]) == "\n"
+                 and detect_newline([_E("a\\nb"), _E("c\\nd")]) == NEWLINE_LITERAL
+                 and detect_newline([_E("sem quebra")]) == "\n"
+                 and detect_newline([_E("a\nb")], "literal") == NEWLINE_LITERAL)
+        log(f"[17] deteccao da forma da quebra (lf / literal / vazio / forcada): "
+            f"{'OK' if nl_ok else 'FALHOU'}")
+        ok &= nl_ok
 
         # 9) formato Otomate (sem CODE_END_, bloco wordcount, pool na cauda)
         log("\n=== amostra otomate (cp932, sem CODE_END_) ===")

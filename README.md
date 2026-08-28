@@ -152,6 +152,37 @@ embutido nas ações ou num pool solto.
 
 **Manual:** edite o `.json` (campo `"translation"`) ou o `.txt` (linhas iniciadas por `>`).
 
+#### Quebra de linha (para a fala caber na tela)
+
+Texto PT-BR é mais comprido que o japonês e estoura a caixa de diálogo. Por isso o
+`translate` **já quebra as falas em 50 colunas por padrão**, gravando as quebras no
+`.json` — dá para revisar e ajustar à mão antes de injetar.
+
+```powershell
+python stcm2l.py translate .\txt -o .\txt_ptbr --max-line 40   # caixa mais estreita
+python stcm2l.py translate .\txt -o .\txt_ptbr --max-line 0    # desliga a quebra
+```
+
+O que a quebra respeita:
+
+- **identificadores nunca são quebrados** (`NO00_0012`, `bgm_theme_01.at9`) — partir um
+  deles faz o jogo perder o recurso;
+- **marcadores saem inteiros** (`#Name[2]`, `{item}`, `%GOLD%`) e **não contam** na
+  largura, porque o jogo não os desenha;
+- **quebras que o texto já tinha são preservadas**, na forma em que estavam;
+- palavra sozinha maior que o limite estoura a linha em vez de ser partida no meio;
+- kana/kanji contam como **duas** colunas.
+
+`--newline` escolhe a forma da quebra: `lf` grava o byte `0x0A`, `literal` grava a
+sequência `\n` de dois caracteres. O padrão `auto` deduz do texto **original** do próprio
+script — se as falas japonesas usam `0x0A`, a tradução usa `0x0A` também.
+
+> A detecção do `auto` só é confiável no formato `.json`. No `.txt` as duas formas viram
+> quebra real na leitura (`unesc`), então não há como distinguir uma da outra.
+
+O mesmo par de flags existe no `inject`, como rede de segurança para texto editado à mão
+depois do `translate` — a quebra é idempotente, então o que já veio quebrado não muda.
+
 ### 3. Injetar
 
 ```powershell
@@ -287,8 +318,10 @@ Path("EV_0001_ptbr.DAT").write_bytes(build(script))
 - Se um `.DAT` só é entendido pela varredura heurística (aviso no `info`) e você
   redimensiona um bloco dentro de um trecho não reconhecido, a ferramenta avisa:
   um cabeçalho de ação escondido ali não teria o campo `length` atualizado.
-- Caixa de texto: nada garante que uma frase mais longa **caiba na tela**. O campo
-  `max_bytes` de cada entrada traz o tamanho original como referência.
+- Caixa de texto: a quebra automática (`--max-line`, 50 por padrão) mede **colunas de
+  texto**, não a largura real da fonte do jogo — numa fonte proporcional o número certo
+  sai no olho, testando no jogo. O campo `max_bytes` de cada entrada traz o tamanho
+  original em bytes como referência.
 
 ## Licença
 

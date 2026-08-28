@@ -22,8 +22,9 @@ from .core import (
 #: um trecho cru que comeca com um marcador conhecido e area de dados, nao codigo
 KNOWN_TAGS = (TAG_CODE_START, TAG_CODE_END, TAG_GLOBAL_DATA)
 from .textio import (
-    TextEntry, classify_text, decode_block, detect_encoding, dump_entries,
-    encode_text, load_entries, looks_like_text,
+    MAX_LINE_DEFAULT, TextEntry, classify_text, decode_block, detect_encoding,
+    detect_newline, dump_entries, encode_text, load_entries, looks_like_text,
+    wrap_text,
 )
 
 DAT_SUFFIXES = (".dat", ".bin", ".stcm", ".scb")
@@ -181,12 +182,22 @@ def _fix_length_params(script: Script, elem: int, old_lens: set[int], new_len: i
 def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
                 out_encoding: str | None = None, fallback: str = "strict",
                 relocate: str = "scan", fix_len_params: bool = True,
-                strict_match: bool = False) -> InjectReport:
-    """Injeta o texto traduzido de volta no .DAT, recalculando todos os ponteiros."""
+                strict_match: bool = False,
+                max_line: int = MAX_LINE_DEFAULT,
+                newline: str = "auto") -> InjectReport:
+    """
+    Injeta o texto traduzido de volta no .DAT, recalculando todos os ponteiros.
+
+    `max_line` quebra a fala traduzida em linhas de ate N colunas visiveis antes
+    de codificar, para caber na caixa de texto do jogo (0 desliga). E uma rede de
+    seguranca para texto editado a mao depois do `translate`: como wrap_text() e
+    idempotente, o que ja veio quebrado nao muda.
+    """
     data = dat_path.read_bytes()
     script = parse(data)
     entries, meta = load_entries(texts_path)
     encoding = out_encoding or meta.get("encoding") or detect_encoding(script)
+    nl = detect_newline(entries, None if newline == "auto" else newline)
     report = InjectReport(source=dat_path, output=out_path)
 
     for entry in entries:
@@ -216,6 +227,10 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
         if translation == entry.original:
             report.skipped += 1
             continue
+
+        # so traducao passa pelo wrap - o texto original nunca e reescrito
+        if max_line > 0 and entry.translation.strip():
+            translation = wrap_text(translation, max_line, nl)
 
         blob = encode_text(translation, encoding, fallback=fallback)
         old_lens = {db.raw_len, db.padded_len, len(db.content)}

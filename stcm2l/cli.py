@@ -26,7 +26,7 @@ from .core import Stcm2lError
 from .pipeline import (
     DAT_SUFFIXES, extract_file, inject_file, inspect, iter_inputs, verify_file,
 )
-from .textio import dump_entries, load_entries
+from .textio import MAX_LINE_DEFAULT, dump_entries, load_entries
 from .translate import TranslationError, translate_entries
 
 TEXT_SUFFIXES = (".json", ".txt")
@@ -205,6 +205,7 @@ def cmd_translate(args: argparse.Namespace) -> int:
                 retries=args.retries, delay=args.delay, cache_path=cache,
                 overwrite=args.overwrite, only_cjk=args.only_cjk,
                 skip_ids=args.skip_ids,
+                max_line=args.max_line, newline=args.newline,
             )
         except TranslationError as exc:
             print(f"  ERRO de traducao: {exc}")
@@ -249,6 +250,7 @@ def cmd_inject(args: argparse.Namespace) -> int:
                 path, pair, target, out_encoding=args.out_encoding,
                 fallback=args.fallback, relocate=args.relocate,
                 fix_len_params=not args.no_fix_len, strict_match=args.strict,
+                max_line=args.max_line, newline=args.newline,
             )
         except (Stcm2lError, UnicodeEncodeError) as exc:
             print(f"[ERRO] {path.name}: {exc}")
@@ -286,6 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  0. python stcm2l.py diag    .\\scripts\\algum.DAT   (se extract devolver 0 textos)\n"
             "  2. python stcm2l.py extract .\\scripts -o .\\txt\n"
             "  3. python stcm2l.py translate .\\txt -o .\\txt_ptbr --source JA --cache cache.json\n"
+            "     (a fala ja sai quebrada em 50 colunas; use --max-line N ou --max-line 0)\n"
             "  4. (revisao manual dos .json)\n"
             "  5. python stcm2l.py inject  .\\scripts --texts .\\txt_ptbr -o .\\out\n"
         ),
@@ -293,6 +296,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"stcm2l-tool {__version__}")
     p.add_argument("--traceback", action="store_true", help="mostra o stack trace completo em erros")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    def quebra(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--max-line", type=int, default=MAX_LINE_DEFAULT,
+                        metavar="N",
+                        help=f"quebra a fala traduzida a cada N colunas visiveis "
+                             f"para caber na caixa de texto (padrao: {MAX_LINE_DEFAULT}; "
+                             f"0 desliga)")
+        sp.add_argument("--newline", choices=("auto", "lf", "literal"), default="auto",
+                        help="forma da quebra: 'lf' = byte 0x0A, 'literal' = a "
+                             "sequencia \\n. Padrao 'auto': deduz do texto original "
+                             "do proprio script (confiavel no .json)")
 
     def common(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("-r", "--recursive", action="store_true",
@@ -358,6 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="traduz fala em qualquer idioma, mas preserva IDs de voz, "
                          "nomes de arquivo e flags do roteiro (scripts em ingles)")
     sp.add_argument("-r", "--recursive", action="store_true")
+    quebra(sp)
     sp.set_defaults(func=cmd_translate)
 
     sp = sub.add_parser("inject", help=".json/.txt -> STCM2L (recalcula os ponteiros)")
@@ -373,6 +388,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="nao atualiza parametros que repetem o tamanho da string")
     sp.add_argument("--strict", action="store_true",
                     help="aborta se o texto original do .DAT divergir do arquivo de traducao")
+    quebra(sp)
     common(sp)
     sp.set_defaults(func=cmd_inject)
 
