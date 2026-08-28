@@ -782,7 +782,15 @@ def percentis(valores: list[int]) -> dict[str, int]:
 
 def piso_e_teto(entries: Iterable[TextEntry], max_line: int = MAX_LINE_DEFAULT,
                 max_lines: int = MAX_LINES_DEFAULT,
-                percentil: int = PISO_PERCENTIL) -> tuple[int, int]:
-    """O piso calculado neste lote e o teto da caixa - para o --dry-run exibir."""
-    return (piso_do_lote(originais_de_fala(entries), percentil),
-            box_budget(max_line, max_lines))
+                percentil: int = PISO_PERCENTIL,
+                piso_fixo: int = 0) -> tuple[int, int]:
+    """
+    O piso EM USO e o teto da caixa - para o --dry-run exibir.
+
+    Tem que respeitar `piso_fixo`: mostrar o piso do percentil enquanto o
+    orcamento usa outro numero faz o relatorio mentir justamente sobre a
+    variavel que o usuario acabou de fixar.
+    """
+    piso = piso_fixo if piso_fixo > 0 else piso_do_lote(
+        originais_de_fala(entries), percentil)
+    return piso, box_budget(max_line, max_lines)

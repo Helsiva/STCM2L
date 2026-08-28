@@ -717,7 +717,7 @@ def cmd_shorten(args: argparse.Namespace) -> int:
             n_entradas += len(entries)
             n_traduzidas += sum(1 for e in entries if e.translation.strip())
             piso, teto = piso_e_teto(entries, args.max_line, args.max_lines,
-                                     args.percentil)
+                                     args.percentil, args.width_floor)
             larguras.extend(larguras_dos_originais(entries))
             for k, v in perfil_dos_originais(entries).items():
                 perfil[k] = perfil.get(k, 0) + v
@@ -782,8 +782,13 @@ def cmd_shorten(args: argparse.Namespace) -> int:
             print(f"\n  largura das {len(larguras)} falas ORIGINAIS (e a caixa que o "
                   f"jogo comprovadamente desenhou):")
             print("    " + "  ".join(f"{k}={v}" for k, v in pc.items()))
-            print(f"    o piso sai do P{args.percentil}. Se a massa esta bem acima dele, "
-                  f"suba com --percentil.")
+            if args.width_floor > 0:
+                print(f"    o piso esta FIXADO em {args.width_floor} (--width-floor); "
+                      f"o percentil nao esta em uso.")
+            else:
+                print(f"    o piso sai do P{args.percentil}. Se a massa esta bem acima "
+                      f"dele, suba com --percentil - ou fixe o numero do corpus com "
+                      f"--width-floor, ja que a caixa e do jogo e nao do arquivo.")
         if por_linha:
             por_linha.sort()
             pl = percentis(por_linha)
@@ -796,7 +801,10 @@ def cmd_shorten(args: argparse.Namespace) -> int:
                       f"({linhas_orig[n] * 100 // max(total_o, 1)}%)")
             print(f"    -> a caixa comporta ao menos {pl['max']} colunas x "
                   f"{max(linhas_orig)} linhas, porque o jogo ja desenhou isso.")
-        if pisos:
+        if pisos and args.width_floor > 0:
+            print(f"\n  piso FIXADO em {args.width_floor} colunas (--width-floor) | "
+                  f"teto da caixa: {pisos[0][2]}")
+        elif pisos:
             print(f"\n  piso do lote (P{args.percentil} dos originais): "
                   + ", ".join(f"{n}={p}" for n, p, _ in pisos[:3])
                   + (" ..." if len(pisos) > 3 else "")
