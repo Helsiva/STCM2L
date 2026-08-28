@@ -199,10 +199,39 @@ class DataBlock:
         return raw[:-1] if self.nul_terminated else raw
 
     # -- escrita ------------------------------------------------------------
-    def set_content(self, blob: bytes) -> None:
-        """Substitui o conteudo util preservando terminador e convencao de padding."""
+    def fits_in(self, blob: bytes, size: int) -> bool:
+        """O conteudo `blob` cabe num bloco de payload de `size` bytes?"""
+        need = len(blob.rstrip(b"\x00")) + 1 if self.nul_terminated else len(blob)
+        return need <= size
+
+    def set_content(self, blob: bytes, fit_to: int | None = None) -> None:
+        """
+        Substitui o conteudo util preservando terminador e convencao de padding.
+
+        `fit_to` fixa o tamanho do payload (modo --fit): o bloco NAO muda de
+        tamanho, entao nenhum offset do arquivo se move e nenhum ponteiro
+        precisa ser recalculado. O espaco que sobra e preenchido com NUL
+        (layout "wordcount", que nao grava tamanho util) ou com espaco
+        (layout "classic", cujo parser exige padding de no maximo 4 bytes -
+        espaco a mais no fim da fala e invisivel na caixa de texto).
+        """
         if self.nul_terminated:
             blob = blob.rstrip(b"\x00") + b"\x00"
+        if fit_to is not None:
+            if len(blob) > fit_to:
+                raise BuildError(
+                    f"texto nao cabe no bloco: {len(blob)} bytes para {fit_to} disponiveis"
+                )
+            if self.layout == "wordcount" or not self.nul_terminated:
+                self.raw_len = len(blob)
+                self.payload = blob + b"\x00" * (fit_to - len(blob))
+            else:
+                # classic: o padding gravado tem que ser <= 4, entao o espaco
+                # sobrando vira espaco em branco ANTES do NUL final
+                miolo = blob[:-1] + b" " * (fit_to - len(blob))
+                self.raw_len = fit_to
+                self.payload = miolo + b"\x00"
+            return
         self.raw_len = len(blob)
         if self.layout == "wordcount":
             # o tamanho gravado e sempre multiplo de 4 e a string precisa caber

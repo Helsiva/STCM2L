@@ -21,7 +21,10 @@ from .core import (
     build, parse, roundtrip_check,
 )
 from .pipeline import collect_entries, inject_file
-from .textio import detect_encoding, dump_entries, load_entries, protect_tags, wrap_text
+from .compare import compare
+from .textio import (
+    classify_text, detect_encoding, dump_entries, load_entries, protect_tags, wrap_text,
+)
 
 
 def _data_block(text: str, encoding: str) -> bytes:
@@ -150,15 +153,17 @@ def _check_otome(tmpdir: Path, log) -> bool:
     dump_entries(entries, texts_file, dat.name, "utf-8", "json")
     out_dat = tmpdir / "out" / "otome.DAT"
     report = inject_file(dat, texts_file, out_dat, out_encoding="utf-8")
-    inj_ok = report.applied == len(entries) and not any(
-        p.startswith("ERRO") for p in report.problems)
+    ids = [e for e in entries if classify_text(e.original) == "id"]
+    inj_ok = (report.applied == len(entries) - len(ids)
+              and not any(p.startswith("ERRO") for p in report.problems))
     log(f"[20] otome: injecao: {report.applied} aplicados, "
         f"{report.grown} maiores ({'OK' if inj_ok else 'FALHOU'})")
     ok &= inj_ok
 
     new = parse(out_dat.read_bytes())
     got = [e.original for e in collect_entries(new, "utf-8")]
-    want = [wrap_text(e.translation) for e in entries]
+    want = [e.original if classify_text(e.original) == "id"
+            else wrap_text(e.translation) for e in entries]
     text_ok = got == want
     log(f"[21] otome: textos apos injecao (ja quebrados em 50): "
         f"{'OK' if text_ok else 'FALHOU'}")
@@ -170,6 +175,7 @@ def _check_otome(tmpdir: Path, log) -> bool:
         el = new.elements[ei]
         destinos[el.offset + el.segment_rel(si)] = db.content.decode("utf-8")
     esperado = [wrap_text(e.translation) for e in entries[len(inline):]]
+    esperado += [e.original for e in entries if classify_text(e.original) == "id"]
     apontados = []
     for el in new.elements:
         if el.kind == "action" and el.params and el.params[0][0]:
@@ -179,6 +185,128 @@ def _check_otome(tmpdir: Path, log) -> bool:
     if not ptr_ok:
         log(f"     apontados={apontados}\n     esperado={esperado}")
     ok &= ptr_ok
+    return bool(ok)
+
+
+def _check_fit(tmpdir: Path, log) -> bool:
+    """
+    Modo --fit: nenhum bloco muda de tamanho, entao o arquivo sai com o MESMO
+    layout e nenhum ponteiro precisa ser recalculado. E o modo seguro para
+    quando o jogo comeca a se perder depois do patch.
+    """
+    ok = True
+    inline = ["はあ……。", "なんでこんなことになったんだろう。", "#Name[2]", "転校!?"]
+    pool = ["（お父さんの仕事の都合で）", "（ヴァンパイアって……夢でも）"]
+    dat = tmpdir / "fit.DAT"
+    dat.write_bytes(make_otome_sample(inline, pool))
+    original = dat.read_bytes()
+
+    script = parse(original)
+    entries = collect_entries(script, "cp932")
+    # metade cabe folgada, metade estoura de proposito
+    curtas, longas = [], []
+    for i, e in enumerate(entries):
+        if classify_text(e.original) == "id":
+            continue
+        if i % 2 == 0:
+            e.translation = "Ah..."
+            curtas.append(e)
+        else:
+            e.translation = ("Uma traducao propositalmente muito maior do que o "
+                             "bloco original comporta, so para estourar.")
+            longas.append(e)
+    texts_file = tmpdir / "fit.json"
+    dump_entries(entries, texts_file, dat.name, "utf-8", "json")
+
+    out = tmpdir / "out" / "fit.DAT"
+    rep = inject_file(dat, texts_file, out, out_encoding="utf-8", fit=True)
+    saida = out.read_bytes()
+    tam_ok = len(saida) == len(original) and rep.layout_preserved
+    conta_ok = rep.applied == len(curtas) and rep.overflow == len(longas)
+    log(f"[23] fit: tamanho {len(original)} -> {len(saida)} "
+        f"({'OK' if tam_ok else 'FALHOU'}); {rep.applied} aplicados, "
+        f"{rep.overflow} recusados por nao caber ({'OK' if conta_ok else 'FALHOU'})")
+    ok &= tam_ok and conta_ok
+
+    # todo offset de elemento tem que estar onde estava
+    novo = parse(saida)
+    offs_ok = ([e.offset for e in novo.elements] == [e.offset for e in script.elements]
+               and novo.header.export_offset == script.header.export_offset
+               and novo.header.collection_link == script.header.collection_link)
+    log(f"[24] fit: todos os offsets e ponteiros intactos: {'OK' if offs_ok else 'FALHOU'}")
+    ok &= offs_ok
+
+    # o que nao coube continua em japones; o que coube foi trocado
+    def _conteudo(sc, entry):
+        return sc.elements[entry.elem].segments[entry.seg].content
+
+    # o que estourou continua com os bytes japoneses ORIGINAIS, byte a byte
+    manteve = all(_conteudo(novo, e) == _conteudo(script, e) for e in longas)
+    trocou = all(_conteudo(novo, e).decode("utf-8").rstrip() == e.translation
+                 for e in curtas)
+    log(f"[25] fit: o que nao coube ficou em japones ({'OK' if manteve else 'FALHOU'}) "
+        f"e o que coube foi traduzido ({'OK' if trocou else 'FALHOU'})")
+    ok &= manteve and trocou
+
+    # -- compare -------------------------------------------------------------
+    rel = compare(dat, out)
+    cmp_ok = (not rel.words and not rel.structural and not rel.id_changes
+              and len(rel.texts) == len(curtas))
+    log(f"[26] compare(original, fit): {len(rel.texts)} textos, {len(rel.words)} words "
+        f"reescritos, {len(rel.suspects)} suspeitos ({'OK' if cmp_ok else 'FALHOU'})")
+    ok &= cmp_ok
+
+    # crescendo: words REALMENTE mudam, mas todos batem com a relocacao logica
+    for e in entries:
+        if classify_text(e.original) != "id":
+            e.translation = f"Traducao {e.id} bem maior do que o original japones."
+    big_texts = tmpdir / "fit_big.json"
+    dump_entries(entries, big_texts, dat.name, "utf-8", "json")
+    big = tmpdir / "out" / "fit_big.DAT"
+    inject_file(dat, big_texts, big, out_encoding="utf-8")
+    rel2 = compare(dat, big)
+    grow_ok = bool(rel2.relocations) and not rel2.suspects and not rel2.structural
+    log(f"[27] compare(original, crescido): {len(rel2.relocations)} relocacoes esperadas, "
+        f"{len(rel2.suspects)} suspeitos ({'OK' if grow_ok else 'FALHOU'})")
+    if rel2.suspects:
+        for w in rel2.suspects[:5]:
+            log(f"     ! 0x{w.off:06X} {w.where}: 0x{w.old:08X} -> 0x{w.new:08X}")
+    ok &= grow_ok
+
+    # sabotagem: um imediato reescrito sem alvo logico tem que virar SUSPEITO
+    dados = bytearray(big.read_bytes())
+    sabotado = parse(bytes(dados))
+    alvo = next(e for e in sabotado.elements if e.kind == "action" and e.params)
+    pos = alvo.offset + 16 + 8            # param 0, word 2
+    struct.pack_into("<I", dados, pos, 0x1234)
+    ruim = tmpdir / "out" / "fit_sabotado.DAT"
+    ruim.write_bytes(bytes(dados))
+    rel3 = compare(dat, ruim)
+    sab_ok = any(w.off == pos and not w.expected for w in rel3.words)
+    log(f"[28] compare acha o imediato sabotado em 0x{pos:X}: "
+        f"{'OK' if sab_ok else 'FALHOU'} ({len(rel3.suspects)} suspeitos)")
+    ok &= sab_ok
+
+    # -- fit no layout "classic", que grava o tamanho util e so aceita ate 4
+    #    bytes de padding: ali a sobra vira espaco antes do NUL final
+    cdat = tmpdir / "fit_classic.DAT"
+    cdat.write_bytes(make_sample(["Um texto original suficientemente longo.", "Curto"], "utf-8"))
+    cscript = parse(cdat.read_bytes())
+    centries = collect_entries(cscript, "utf-8")
+    for e in centries:
+        e.translation = "Cabe" if classify_text(e.original) != "id" else e.original
+    ctexts = tmpdir / "fit_classic.json"
+    dump_entries(centries, ctexts, cdat.name, "utf-8", "json")
+    cout = tmpdir / "out" / "fit_classic.DAT"
+    crep = inject_file(cdat, ctexts, cout, out_encoding="utf-8", fit=True)
+    cnovo = parse(cout.read_bytes())
+    ctextos = [e.original.rstrip() for e in collect_entries(cnovo, "utf-8")]
+    classic_ok = (len(cout.read_bytes()) == len(cdat.read_bytes())
+                  and crep.layout_preserved and crep.overflow == 0
+                  and ctextos[0] == "Cabe")
+    log(f"[29] fit no layout classic (sobra vira espaco): "
+        f"{'OK' if classic_ok else 'FALHOU'} - {ctextos}")
+    ok &= classic_ok
     return bool(ok)
 
 
@@ -239,18 +367,25 @@ def run(verbose: bool = True) -> bool:
             # 4) injecao (saida sempre UTF-8: cp932 nao possui acentos latinos)
             out_dat = tmpdir / "out" / f"{label}.DAT"
             report = inject_file(dat, texts_file, out_dat, out_encoding="utf-8")
+            # identificador (SYSTEM_GLOBAL) tem a traducao recusada de proposito
+            ids = [e for e in entries if classify_text(e.original) == "id"]
             log(f"[4] injecao: {report.applied} aplicados, {report.skipped} pulados, "
                 f"{report.grown} blocos maiores que o original")
             for p in report.problems:
                 log(f"    ! {p}")
-            ok &= report.applied == len(entries) and not any(
-                p.startswith("ERRO") for p in report.problems)
+            inj_ok = (report.applied == len(entries) - len(ids)
+                      and report.id_changes == len(ids)
+                      and not any(p.startswith("ERRO") for p in report.problems))
+            log(f"    identificadores preservados: {report.id_changes}/{len(ids)} "
+                f"({'OK' if inj_ok else 'FALHOU'})")
+            ok &= inj_ok
 
             # 5) reabre e confere textos + ponteiros
             new = parse(out_dat.read_bytes())
             new_entries = collect_entries(new, "utf-8")
             # o inject quebra as falas em 50 colunas por padrao
-            want = [wrap_text(e.translation) for e in entries]
+            want = [e.original if classify_text(e.original) == "id"
+                    else wrap_text(e.translation) for e in entries]
             got = [e.original for e in new_entries]
             text_ok = got == want
             log(f"[5] textos apos injecao (ja quebrados em 50): "
@@ -404,6 +539,10 @@ def run(verbose: bool = True) -> bool:
         # 9) formato Otomate (sem CODE_END_, bloco wordcount, pool na cauda)
         log("\n=== amostra otomate (cp932, sem CODE_END_) ===")
         ok &= _check_otome(tmpdir, log)
+
+        # 10) modo --fit (layout intacto) e o comando compare
+        log("\n=== modo --fit e compare ===")
+        ok &= _check_fit(tmpdir, log)
 
     log("\n" + ("TODOS OS TESTES PASSARAM" if ok else "HOUVE FALHAS - veja acima"))
     return bool(ok)

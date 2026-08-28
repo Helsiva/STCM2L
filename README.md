@@ -194,11 +194,101 @@ python stcm2l.py inject .\scripts\EV_0001.DAT --texts .\txt_ptbr\EV_0001.json `
 python stcm2l.py inject .\scripts --texts .\txt_ptbr -o .\out --out-encoding utf-8
 ```
 
+#### Dois modos, e a escolha muda o risco
+
+| modo | o que faz | risco |
+|---|---|---|
+| **padrão** (cresce) | o bloco cresce e o arquivo inteiro é reendereçado | cabe qualquer tradução, mas depende de acertar **quais** words são ponteiro |
+| **`--fit`** | nenhum bloco muda de tamanho; a sobra vira padding | **zero**: o arquivo sai com o mesmo tamanho e o mesmo layout, então não existe ponteiro para errar. O que não couber fica em japonês e é listado |
+
+```powershell
+python stcm2l.py inject .\scripts --texts .\txt_ptbr -o .\out --out-encoding utf-8 --fit
+```
+
+O `--fit` é a rede de segurança: se o jogo passou a se perder depois do patch,
+reinjete com ele. Cada fala que não couber sai no relatório com **quantos bytes
+cortar**; encurte a tradução no `.json` e rode de novo até zerar.
+
+#### Identificador nunca é traduzido
+
+O jogo procura voz, trilha e **o próximo script** por nome. Se `NO00_0012` virar
+`Não 00_0012`, o jogo não acha o recurso e volta para o título. Por isso o `inject`
+**recusa** tradução em bloco classificado como identificador e mantém o original,
+avisando qual foi. `--allow-id-change` força (raramente é o que você quer).
+
+#### `--fix-len` (desligado por padrão)
+
+Alguns opcodes repetem o tamanho da string como imediato num parâmetro. O
+`--fix-len` atualiza esses imediatos junto — mas é um **palpite**: qualquer
+parâmetro que por acaso valha o tamanho antigo (um número de flag, um alvo de
+salto) é reescrito junto e o roteiro desanda. Ligue só se souber que o seu título
+precisa, e confira depois com o `compare`.
+
 ### 4. Conferir o resultado
 
 ```powershell
 python stcm2l.py verify .\out
 python stcm2l.py extract .\out -o .\conferencia   # o texto PT-BR está lá?
+
+# o que mudou ALÉM do texto?
+python stcm2l.py compare .\scripts --patched .\out
+```
+
+O `verify` só prova que o parser reproduz o arquivo **quando nada muda de
+tamanho**. Depois de injetar tradução maior, tudo se move e a ferramenta precisa
+adivinhar quais words do script são ponteiro — e é aí que o roteiro quebra sem
+erro nenhum aparecer.
+
+O `compare` responde exatamente isso, comparando original e injetado elemento a
+elemento e separando o que mudou em quatro baldes:
+
+```
+[ OK ] 600_sub_NO00.DAT
+       tamanho    480 -> 596 (+116 bytes)
+       elementos  6 -> 6
+       textos     5 alterados (5 cjk)
+       words      5 reescritos (5 relocacao esperada, 0 SUSPEITOS)
+```
+
+- **texto** — o que era para mudar mesmo;
+- **identificador alterado** — nome de recurso/label que mudou: o jogo perde o recurso;
+- **relocação esperada** — word que valia um endereço e passou a valer o endereço
+  novo do **mesmo alvo lógico**: correto;
+- **SUSPEITO** — word reescrito sem alvo lógico correspondente. É aqui que mora o
+  bug de roteiro.
+
+`--show-text` lista também as falas trocadas; `--limit N` controla quantos itens
+aparecem por seção.
+
+---
+
+## O jogo não sai da intro (ou volta para o título)
+
+Sintoma clássico de script quebrado **sem crash**: a cena termina e a engine não
+consegue seguir para a próxima, então volta para o começo. Em ordem de
+probabilidade:
+
+1. **Identificador traduzido.** O nome do próximo script, do arquivo de voz ou de
+   uma label virou português. Rode
+   `python stcm2l.py compare .\scripts --patched .\out` — identificador alterado
+   aparece em destaque. Versões desta ferramenta anteriores a este guard traduziam
+   isso quando o `translate` rodou **sem** `--only-cjk` / `--skip-ids`.
+2. **Imediato reescrito por engano.** Um número do jogo (flag, alvo de salto) que
+   por acaso valia um offset conhecido foi relocado junto. O `compare` marca como
+   **SUSPEITO**. Solução definitiva: reinjetar com `--fit`.
+3. **Arquivo repacotado com tamanho diferente.** Se o `.DAT` volta para dentro de
+   um CPK/PAC, confira se a ferramenta de repack atualizou a TOC. Com `--fit` o
+   tamanho não muda, o que elimina essa variável junto.
+
+Roteiro de bissecção quando não dá para saber qual arquivo é o culpado:
+
+```powershell
+# 1. confirme que o jogo passa da intro com os .DAT originais
+# 2. reinjete tudo em modo seguro e teste de novo
+python stcm2l.py inject .\scripts --texts .\txt_ptbr -o .\out_fit --out-encoding utf-8 --fit
+python stcm2l.py compare .\scripts --patched .\out_fit    # tem que dar 0 words reescritos
+# 3. se com --fit o jogo anda, o problema era relocação; volte a crescer arquivo
+#    por arquivo, rodando compare em cada um.
 ```
 
 ---

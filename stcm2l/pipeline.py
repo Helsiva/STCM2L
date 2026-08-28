@@ -155,6 +155,14 @@ class InjectReport:
     skipped: int = 0
     grown: int = 0
     length_params_fixed: int = 0
+    #: entradas recusadas por nao caber no bloco original (modo --fit)
+    overflow: int = 0
+    #: maior estouro visto, em bytes (para dimensionar o corte manual)
+    worst_overflow: int = 0
+    #: identificadores que a traducao alterou (o jogo procura o recurso por nome)
+    id_changes: int = 0
+    #: True quando a saida tem exatamente o mesmo layout do original
+    layout_preserved: bool = False
     problems: list[str] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -181,12 +189,26 @@ def _fix_length_params(script: Script, elem: int, old_lens: set[int], new_len: i
 
 def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
                 out_encoding: str | None = None, fallback: str = "strict",
-                relocate: str = "scan", fix_len_params: bool = True,
+                relocate: str = "scan", fix_len_params: bool = False,
                 strict_match: bool = False,
                 max_line: int = MAX_LINE_DEFAULT,
-                newline: str = "auto") -> InjectReport:
+                newline: str = "auto",
+                fit: bool = False,
+                allow_id_change: bool = False) -> InjectReport:
     """
-    Injeta o texto traduzido de volta no .DAT, recalculando todos os ponteiros.
+    Injeta o texto traduzido de volta no .DAT.
+
+    Dois modos, e a escolha muda o risco:
+
+    `fit=False` (padrao) - o bloco cresce e o arquivo inteiro e reendereçado.
+        Cabe qualquer traducao, mas depende de acertar QUAIS words do script sao
+        ponteiro. Um imediato do jogo (numero de flag, alvo de salto) que por
+        acaso valha um offset conhecido e reescrito junto e o roteiro desanda.
+
+    `fit=True` - nenhum bloco muda de tamanho: o que sobra vira padding e o que
+        nao cabe e recusado (fica o japones). O arquivo de saida tem o MESMO
+        tamanho e o MESMO layout do original, entao nao existe ponteiro para
+        errar. E o modo a usar quando o jogo comeca a se perder depois do patch.
 
     `max_line` quebra a fala traduzida em linhas de ate N colunas visiveis antes
     de codificar, para caber na caixa de texto do jogo (0 desliga). E uma rede de
@@ -228,6 +250,20 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
             report.skipped += 1
             continue
 
+        # identificador alterado: o jogo procura voz, trilha e o PROXIMO SCRIPT
+        # por esse nome. Trocar 'NO00_0012' por 'Nao 00_0012' faz o jogo nao
+        # achar o recurso e voltar para o titulo - sintoma classico de "a intro
+        # nao termina". Por isso o padrao e preservar o original.
+        if entry.original.strip() and classify_text(entry.original) == "id":
+            report.id_changes += 1
+            report.problems.append(
+                f"{entry.id}: IDENTIFICADOR alterado {entry.original!r} -> {translation!r}"
+                + ("" if allow_id_change else " - mantido o original (use --allow-id-change para forcar)")
+            )
+            if not allow_id_change:
+                report.skipped += 1
+                continue
+
         # so traducao passa pelo wrap - o texto original nunca e reescrito
         if max_line > 0 and entry.translation.strip():
             translation = wrap_text(translation, max_line, nl)
@@ -235,7 +271,21 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
         blob = encode_text(translation, encoding, fallback=fallback)
         old_lens = {db.raw_len, db.padded_len, len(db.content)}
         old_size = db.size()
-        db.set_content(blob)
+        budget = db.padded_len
+
+        if fit and not db.fits_in(blob, budget):
+            need = len(blob.rstrip(b"\x00")) + 1 if db.nul_terminated else len(blob)
+            sobra = need - budget
+            report.overflow += 1
+            report.worst_overflow = max(report.worst_overflow, sobra)
+            report.skipped += 1
+            report.problems.append(
+                f"{entry.id}: nao cabe - {need} bytes para {budget} disponiveis "
+                f"(corte {sobra} byte(s)): {translation!r}"
+            )
+            continue
+
+        db.set_content(blob, fit_to=budget if fit else None)
         if db.raw_len > max(old_lens):
             report.grown += 1
         risky_raw = (el.kind == "raw" and el.segments
@@ -254,12 +304,20 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
             )
         report.applied += 1
 
+    out = build(script, relocate=relocate)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(build(script, relocate=relocate))
+    out_path.write_bytes(out)
+    report.layout_preserved = len(out) == len(data)
+
+    if fit and not report.layout_preserved:
+        report.problems.append(
+            f"ERRO: modo --fit deveria preservar o tamanho ({len(data)} bytes) e a saida "
+            f"tem {len(out)}. Nao use este arquivo no jogo."
+        )
 
     # sanidade: o arquivo gerado tem que reabrir sem erros
     try:
-        check = parse(out_path.read_bytes())
+        check = parse(out)
         if len(check.elements) != len(script.elements):
             report.problems.append(
                 "aviso: o arquivo gerado reabriu com contagem de elementos diferente "

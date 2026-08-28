@@ -11,6 +11,7 @@ pasta (processamento em lote).
     python stcm2l.py extract   <arquivo|pasta> -o <saida>
     python stcm2l.py translate <json|pasta>    -o <saida> --source JA   (gratis, sem chave)
     python stcm2l.py inject    <arquivo|pasta> --texts <json|pasta> -o <saida>
+    python stcm2l.py compare   <original> --patched <injetado>   (o que mudou alem do texto?)
     python stcm2l.py selftest
 """
 
@@ -22,6 +23,7 @@ import traceback
 from pathlib import Path
 
 from . import __version__
+from .compare import compare
 from .core import Stcm2lError
 from .pipeline import (
     DAT_SUFFIXES, extract_file, inject_file, inspect, iter_inputs, verify_file,
@@ -234,6 +236,8 @@ def cmd_inject(args: argparse.Namespace) -> int:
         out.mkdir(parents=True, exist_ok=True)
     fails = 0
     applied = 0
+    overflow = 0
+    id_changes = 0
     for path in files:
         pair = _pair_texts(path, texts)
         if pair is None:
@@ -249,8 +253,10 @@ def cmd_inject(args: argparse.Namespace) -> int:
             rep = inject_file(
                 path, pair, target, out_encoding=args.out_encoding,
                 fallback=args.fallback, relocate=args.relocate,
-                fix_len_params=not args.no_fix_len, strict_match=args.strict,
+                fix_len_params=args.fix_len and not args.no_fix_len,
+                strict_match=args.strict,
                 max_line=args.max_line, newline=args.newline,
+                fit=args.fit, allow_id_change=args.allow_id_change,
             )
         except (Stcm2lError, UnicodeEncodeError) as exc:
             print(f"[ERRO] {path.name}: {exc}")
@@ -260,12 +266,99 @@ def cmd_inject(args: argparse.Namespace) -> int:
             fails += 1
             continue
         applied += rep.applied
-        print(f"[ OK ] {path.name}: {rep.applied} textos, {rep.skipped} pulados, "
-              f"{rep.length_params_fixed} tamanhos corrigidos -> {target}")
-        for p in rep.problems:
+        overflow += rep.overflow
+        id_changes += rep.id_changes
+        extra = ""
+        if rep.overflow:
+            extra += f", {rep.overflow} NAO couberam"
+        if rep.id_changes:
+            extra += f", {rep.id_changes} identificadores"
+        if args.fit:
+            extra += "  [layout preservado]" if rep.layout_preserved else "  [LAYOUT MUDOU!]"
+        print(f"[ OK ] {path.name}: {rep.applied} textos, {rep.skipped} pulados{extra} -> {target}")
+        for p in rep.problems[:args.limit]:
             print(f"       ! {p}")
+        if len(rep.problems) > args.limit:
+            print(f"       ... e mais {len(rep.problems) - args.limit} avisos "
+                  f"(--limit para ver mais)")
     print(f"\n{applied} textos injetados em {len(files) - fails}/{len(files)} arquivos.")
+    if id_changes:
+        print(f"{id_changes} identificador(es) tiveram traducao recusada - o jogo procura voz, "
+              f"trilha e o proximo script por esse nome. Reveja o .json e apague a traducao "
+              f"dessas entradas.")
+    if overflow:
+        print(f"{overflow} fala(s) nao couberam no bloco original e ficaram em japones. "
+              f"Encurte a traducao dessas entradas e rode de novo.")
     return 1 if fails else 0
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    src = Path(args.input)
+    patched = Path(args.patched)
+    files = iter_inputs(src, args.recursive, args.suffixes)
+    if not files:
+        print("nenhum arquivo encontrado.")
+        return 1
+    sujos = 0
+    for path in files:
+        alvo = patched if patched.is_file() else None
+        if alvo is None:
+            alvo = patched / path.name
+            if not alvo.exists():
+                achado = next(patched.rglob(path.name), None)
+                if achado is None:
+                    print(f"[PULA] {path.name}: sem par em {patched}")
+                    continue
+                alvo = achado
+        try:
+            rep = compare(path, alvo)
+        except Stcm2lError as exc:
+            print(f"[ERRO] {path.name}: {exc}")
+            sujos += 1
+            continue
+
+        delta = rep.size_b - rep.size_a
+        marca = " OK " if rep.clean else "!!!!"
+        print(f"\n[{marca}] {path.name}")
+        print(f"       tamanho    {rep.size_a} -> {rep.size_b} ({delta:+d} bytes)"
+              + ("   [layout preservado]" if delta == 0 else ""))
+        print(f"       elementos  {rep.elems_a} -> {rep.elems_b}")
+        tipos = {}
+        for t in rep.texts:
+            tipos[t.kind] = tipos.get(t.kind, 0) + 1
+        resumo = ", ".join(f"{v} {k}" for k, v in sorted(tipos.items())) or "nenhum"
+        print(f"       textos     {len(rep.texts)} alterados ({resumo})")
+        print(f"       words      {len(rep.words)} reescritos "
+              f"({len(rep.relocations)} relocacao esperada, {len(rep.suspects)} SUSPEITOS)")
+
+        for msg in rep.structural[:args.limit]:
+            print(f"       ! ESTRUTURA: {msg}")
+        ids = rep.id_changes
+        if ids:
+            print(f"       ! {len(ids)} IDENTIFICADOR(ES) ALTERADO(S) - o jogo procura voz, "
+                  f"trilha e o proximo script por esse nome:")
+            for t in ids[:args.limit]:
+                print(f"           [{t.elem}:{t.seg}] {t.old!r} -> {t.new!r}")
+        sus = rep.suspects
+        if sus:
+            print(f"       ! {len(sus)} WORD(S) SUSPEITO(S) - reescritos sem alvo logico "
+                  f"correspondente (candidatos a quebrar o roteiro):")
+            for w in sus[:args.limit]:
+                op = f" op 0x{w.opcode:X}" if w.opcode is not None else ""
+                print(f"           0x{w.off:06X} elem {w.elem}{op} {w.where}: "
+                      f"0x{w.old:08X} -> 0x{w.new:08X}")
+        if args.show_text:
+            for t in rep.texts[:args.limit]:
+                print(f"           [{t.elem}:{t.seg}] ({t.kind}) {t.old!r} -> {t.new!r}")
+        if not rep.clean:
+            sujos += 1
+
+    total = len(files)
+    print(f"\n{total - sujos}/{total} arquivos mudaram SO o que deviam.")
+    if sujos:
+        print("Arquivo com identificador alterado ou word suspeito e o primeiro suspeito de "
+              "roteiro travado. Reinjete com --fit para eliminar a relocacao inteira.")
+    return 1 if sujos else 0
 
 
 def cmd_selftest(args: argparse.Namespace) -> int:
@@ -291,6 +384,9 @@ def build_parser() -> argparse.ArgumentParser:
             "     (a fala ja sai quebrada em 50 colunas; use --max-line N ou --max-line 0)\n"
             "  4. (revisao manual dos .json)\n"
             "  5. python stcm2l.py inject  .\\scripts --texts .\\txt_ptbr -o .\\out\n"
+            "     (--fit = nenhum bloco muda de tamanho: nenhum ponteiro para errar)\n"
+            "  6. python stcm2l.py compare .\\scripts --patched .\\out\n"
+            "     (o que mudou alem do texto? identificador trocado e word suspeito)\n"
         ),
     )
     p.add_argument("--version", action="version", version=f"stcm2l-tool {__version__}")
@@ -383,14 +479,41 @@ def build_parser() -> argparse.ArgumentParser:
                     help="codificacao de gravacao (padrao: a mesma do arquivo de traducao)")
     sp.add_argument("--fallback", choices=("strict", "ascii", "replace"), default="strict",
                     help="o que fazer com caracteres que nao cabem na codificacao do jogo")
-    sp.add_argument("--relocate", choices=("scan", "strict"), default="scan")
+    sp.add_argument("--fit", action="store_true",
+                    help="NAO deixa nenhum bloco mudar de tamanho: o arquivo sai com o mesmo "
+                         "layout do original e nenhum ponteiro e recalculado. O que nao couber "
+                         "fica em japones e e listado no relatorio. Use quando o jogo se perde "
+                         "depois do patch.")
+    sp.add_argument("--relocate", choices=("scan", "strict"), default="scan",
+                    help="como achar ponteiros quando o texto cresce (ignorado com --fit). "
+                         "'scan' reloca todo word que valha um endereco conhecido - pega mais "
+                         "ponteiro e tambem mais imediato do jogo por engano; 'strict' so mexe "
+                         "no 1o word de cada parametro, exports e collection_link.")
+    sp.add_argument("--fix-len", action="store_true",
+                    help="atualiza parametros cujo imediato repete o tamanho da string. "
+                         "E um palpite: qualquer parametro que por acaso valha o tamanho antigo "
+                         "e reescrito junto. Desligado por padrao.")
     sp.add_argument("--no-fix-len", action="store_true",
-                    help="nao atualiza parametros que repetem o tamanho da string")
+                    help="(padrao; mantido por compatibilidade com scripts antigos)")
+    sp.add_argument("--allow-id-change", action="store_true",
+                    help="deixa passar traducao de identificador (id de voz, nome de arquivo, "
+                         "label). Por padrao o original e preservado: trocar esses nomes faz o "
+                         "jogo nao achar o recurso e voltar para o titulo.")
     sp.add_argument("--strict", action="store_true",
                     help="aborta se o texto original do .DAT divergir do arquivo de traducao")
+    sp.add_argument("--limit", type=int, default=15, help="avisos mostrados por arquivo")
     quebra(sp)
     common(sp)
     sp.set_defaults(func=cmd_inject)
+
+    sp = sub.add_parser("compare", help="original vs injetado: o que mudou alem do texto?")
+    sp.add_argument("input", help="arquivo .DAT original ou pasta com os originais")
+    sp.add_argument("--patched", required=True, help="arquivo .DAT injetado ou pasta de saida")
+    sp.add_argument("--limit", type=int, default=15, help="itens mostrados por secao")
+    sp.add_argument("--show-text", action="store_true",
+                    help="lista tambem os textos alterados, nao so os identificadores")
+    common(sp)
+    sp.set_defaults(func=cmd_compare)
 
     sp = sub.add_parser("selftest", help="roda a bateria de testes internos")
     sp.set_defaults(func=cmd_selftest)
