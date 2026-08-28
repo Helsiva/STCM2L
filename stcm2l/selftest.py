@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 
 from .core import (
+    slot_verdicts,
     DATA_HEADER_SIZE, EXPORT_ENTRY_SIZE, EXPORT_NAME_SIZE, HEADER_SIZE, align4,
     build, parse, roundtrip_check,
 )
@@ -461,6 +462,63 @@ def _check_fit(tmpdir: Path, log) -> bool:
         log(f"     opcode 0x{t.opcode:X} param {t.pi} word {t.wi}: "
             f"{t.relocados}/{t.instancias} ({t.razao:.0%})")
     ok &= coin_ok
+
+    # -- o teste que separa ponteiro de acaso, e o modo --relocate slots -------
+    # param 0 word 0 e ponteiro de verdade (aponta sempre). param 0 word 2 vira
+    # um imediato do jogo: numeros 4-alinhados dentro da faixa de enderecos, dos
+    # quais so uma fracao cai sobre um endereco - que e como o acaso se parece.
+    sdat2 = tmpdir / "slots.DAT"
+    # amostra maior: o veredito "acaso" exige acertos suficientes para nao ser
+    # ruido - com poucas instancias a resposta honesta e "duvidoso"
+    mais = [f"\u53f0\u8a5e{i}\u3067\u3059\u3088" for i in range(60)]
+    base2 = parse(make_otome_sample(mais, pool))
+    acoes2 = [e for e in base2.elements if e.kind == "action" and e.params]
+    for i, el in enumerate(acoes2):
+        el.params[0][2] = 0x40 + i * 4        # imediato plausivel, nao escolhido
+    sdat2.write_bytes(build(base2))
+
+    sc2 = parse(sdat2.read_bytes())
+    vereditos = slot_verdicts(sc2)
+    ponteiro = [v for v in vereditos.values() if v.wi == 0 and v.veredito == "ponteiro"]
+    acaso = [v for v in vereditos.values() if v.wi == 2 and v.veredito == "acaso"]
+    nao_ponteiro = [v for v in vereditos.values()
+                    if v.wi == 2 and v.candidatas and v.veredito != "ponteiro"]
+    sep_ok = bool(ponteiro) and bool(acaso) and len(nao_ponteiro) == 3
+    log(f"[37] slot_verdicts separa ponteiro de acaso: {len(ponteiro)} ponteiro(s), "
+        f"{len(acaso)} acaso ({'OK' if sep_ok else 'FALHOU'})")
+    for v in list(vereditos.values()):
+        if v.candidatas:
+            log(f"     0x{v.opcode:X} p{v.pi} w{v.wi}: {v.acertos}/{v.candidatas} "
+                f"candidatas = {v.precisao:.0%} (densidade {v.densidade:.0%}) -> {v.veredito}")
+    ok &= sep_ok
+
+    ent2 = collect_entries(sc2, "cp932")
+    for e in ent2:
+        if classify_text(e.original) != "id":
+            e.translation = f"Traducao {e.id} bem maior que o original japones."
+    j2 = tmpdir / "slots.json"
+    dump_entries(ent2, j2, sdat2.name, "cp932", "json")
+
+    o_scan = tmpdir / "out" / "slots_scan.DAT"
+    o_slot = tmpdir / "out" / "slots_slots.DAT"
+    inject_file(sdat2, j2, o_scan, out_encoding="utf-8", relocate="scan")
+    inject_file(sdat2, j2, o_slot, out_encoding="utf-8", relocate="slots")
+
+    def _w2(caminho: Path) -> list[int]:
+        sc = parse(caminho.read_bytes())
+        return [e.params[0][2] for e in sc.elements if e.kind == "action" and e.params]
+
+    antes_w2 = [e.params[0][2] for e in acoes2]
+    scan_mexeu = _w2(o_scan) != antes_w2
+    slots_preservou = _w2(o_slot) == antes_w2
+    # e o ponteiro de verdade continua sendo seguido nos DOIS modos
+    r_slots = compare(sdat2, o_slot)
+    ponteiro_ok = bool(r_slots.relocations) and not r_slots.suspects
+    modo_ok = scan_mexeu and slots_preservou and ponteiro_ok
+    log(f"[38] --relocate slots: scan mexeu no imediato={scan_mexeu}, "
+        f"slots preservou={slots_preservou}, ponteiro ainda relocado="
+        f"{ponteiro_ok} ({'OK' if modo_ok else 'FALHOU'})")
+    ok &= modo_ok
     return bool(ok)
 
 

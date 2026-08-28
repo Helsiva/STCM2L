@@ -302,8 +302,51 @@ toda instância daquele opcode; uma coincidência aparece numa só.
 ```
 
 Slot isolado não é prova de erro — pode ser um ponteiro que só aparece em certos
-casos. Mas é o lugar certo para olhar antes de aceitar um patch que cresceu, e
-é o único sinal que existe para esse tipo de dano.
+casos. Quem decide é o comando `slots`.
+
+### `slots` — qual word é *mesmo* ponteiro
+
+```powershell
+python stcm2l.py slots .\scripts -r
+```
+
+Roda só nos **originais** e separa as duas coisas que a relocação confunde:
+
+- um **ponteiro** foi escrito para apontar, então praticamente toda instância dele
+  cai exatamente sobre um endereço conhecido;
+- um **imediato** do jogo (flag, alvo de salto, contador) às vezes cai sobre um
+  endereço por acaso — e a frequência disso é justamente a **densidade de
+  endereços** entre as posições 4-alinhadas do arquivo.
+
+Por isso a conta não é "quantas foram relocadas" e sim **das que poderiam ser
+ponteiro, quantas acertaram**:
+
+```
+Densidade media de enderecos entre as posicoes 4-alinhadas: 20.0%
+  = a chance de um numero QUALQUER cair sobre um endereco por acaso.
+
+    opcode  p  w  instancias  candidatas  acertos  precisao  veredito
+  0x4BA     0  0          20          20       20   100.0%   PONTEIRO
+  0x4BA     0  2          20           4        4    20.0%   acaso (imediato do jogo)
+```
+
+100% contra 20% — e 20% é exatamente a densidade. Não há ambiguidade.
+
+### `inject --relocate slots`
+
+De posse desse veredito, o `inject` reloca **só os slots que são ponteiro**:
+
+```powershell
+python stcm2l.py inject .\scripts --texts .\txt_ptbr -o .\out -r --relocate slots
+```
+
+É o modo que deixa o texto crescer sem o dano invisível do `scan`. Trecho cru só
+é relocado quando o bloco inteiro parece tabela de ponteiros (≥90% dos words
+caindo em endereços conhecidos), o que preserva a tabela do `GLOBAL_DATA` sem
+reescrever dado solto.
+
+Ordem de preferência, na prática: `--relocate slots` para crescer com segurança,
+`--fit` quando o repack exigir tamanho fixo, `scan` só para investigar.
 
 ---
 

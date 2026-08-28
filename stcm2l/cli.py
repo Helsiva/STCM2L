@@ -24,7 +24,7 @@ from pathlib import Path
 
 from . import __version__
 from .compare import compare
-from .core import Stcm2lError
+from .core import SlotVerdict, Stcm2lError, parse, slot_verdicts
 from .pipeline import (
     DAT_SUFFIXES, extract_file, inject_file, inspect, iter_inputs, verify_file,
 )
@@ -530,6 +530,64 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 1 if sujos else 0
 
 
+def cmd_slots(args: argparse.Namespace) -> int:
+    """Quais words de parametro sao MESMO ponteiro, medido nos originais."""
+    files = iter_inputs(Path(args.input), args.recursive, args.suffixes)
+    if not files:
+        print("nenhum arquivo encontrado.")
+        return 1
+    somado: dict[tuple[int, int, int], list[int]] = {}
+    densidades: list[float] = []
+    lidos = 0
+    for path in files:
+        try:
+            script = parse(path.read_bytes())
+        except Stcm2lError as exc:
+            print(f"[ERRO] {path.name}: {exc}")
+            continue
+        lidos += 1
+        for chave, v in slot_verdicts(script).items():
+            acc = somado.setdefault(chave, [0, 0, 0])
+            acc[0] += v.instancias
+            acc[1] += v.candidatas
+            acc[2] += v.acertos
+            if v.densidade:
+                densidades.append(v.densidade)
+    if not lidos:
+        return 1
+    densidade = sum(densidades) / len(densidades) if densidades else 0.0
+    print(f"\n{lidos} arquivo(s). Densidade media de enderecos entre as posicoes "
+          f"4-alinhadas: {densidade:.1%}")
+    print("  = a chance de um numero QUALQUER cair sobre um endereco por acaso.\n")
+    print(f"  {'opcode':>10} {'p':>2} {'w':>2} {'instancias':>11} {'candidatas':>11} "
+          f"{'acertos':>8} {'precisao':>9}  veredito")
+
+    linhas = []
+    for (op, pi, wi), (inst, cand, acer) in somado.items():
+        if not cand:
+            continue
+        v = SlotVerdict(op, pi, wi, inst, cand, acer, densidade)
+        linhas.append((v.veredito != "ponteiro", -v.precisao, v))
+    for _, _, v in sorted(linhas, key=lambda x: (x[0], x[1]))[:args.limit]:
+        marca = {"ponteiro": "PONTEIRO", "acaso": "acaso (imediato do jogo)",
+                 "duvidoso": "duvidoso"}[v.veredito]
+        print(f"  0x{v.opcode:<8X} {v.pi:>2} {v.wi:>2} {v.instancias:>11} "
+              f"{v.candidatas:>11} {v.acertos:>8} {v.precisao:>8.1%}  {marca}")
+    total = len(linhas)
+    if total > args.limit:
+        print(f"  ... e mais {total - args.limit} slots (--limit para ver mais)")
+
+    ponteiros = sum(1 for _, _, v in linhas if v.veredito == "ponteiro")
+    acasos = sum(1 for _, _, v in linhas if v.veredito == "acaso")
+    duvidas = total - ponteiros - acasos
+    print(f"\n  {ponteiros} slots sao ponteiro, {acasos} sao acaso, {duvidas} duvidosos.")
+    if acasos:
+        print("  Com --relocate scan (o padrao) os 'acaso' sao reescritos quando o texto "
+              "cresce, e e assim que o roteiro quebra sem erro nenhum.")
+        print("  Use 'inject --relocate slots': ele reloca so os PONTEIRO.")
+    return 0
+
+
 def cmd_selftest(args: argparse.Namespace) -> int:
     from .selftest import run
     return 0 if run() else 1
@@ -653,11 +711,13 @@ def build_parser() -> argparse.ArgumentParser:
                          "layout do original e nenhum ponteiro e recalculado. O que nao couber "
                          "fica em japones e e listado no relatorio. Use quando o jogo se perde "
                          "depois do patch.")
-    sp.add_argument("--relocate", choices=("scan", "strict"), default="scan",
+    sp.add_argument("--relocate", choices=("scan", "strict", "slots"), default="scan",
                     help="como achar ponteiros quando o texto cresce (ignorado com --fit). "
-                         "'scan' reloca todo word que valha um endereco conhecido - pega mais "
-                         "ponteiro e tambem mais imediato do jogo por engano; 'strict' so mexe "
-                         "no 1o word de cada parametro, exports e collection_link.")
+                         "'slots' MEDE quais slots (opcode, parametro, word) sao ponteiro e "
+                         "so reloca esses - e o seguro para deixar o texto crescer; "
+                         "'scan' reloca todo word que valha um endereco conhecido, pegando "
+                         "tambem imediato do jogo por engano; 'strict' so mexe no 1o word de "
+                         "cada parametro, exports e collection_link. Confira com 'slots'.")
     sp.add_argument("--fix-len", action="store_true",
                     help="atualiza parametros cujo imediato repete o tamanho da string. "
                          "E um palpite: qualquer parametro que por acaso valha o tamanho antigo "
@@ -691,6 +751,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "lote no fim. Para varrer uma arvore inteira sem afogar o terminal.")
     common(sp)
     sp.set_defaults(func=cmd_compare)
+
+    sp = sub.add_parser("slots", help="quais words de parametro sao MESMO ponteiro")
+    sp.add_argument("input", help="arquivo .DAT ORIGINAL ou pasta com os originais")
+    sp.add_argument("--limit", type=int, default=25, help="slots mostrados")
+    common(sp)
+    sp.set_defaults(func=cmd_slots)
 
     sp = sub.add_parser("selftest", help="roda a bateria de testes internos")
     sp.set_defaults(func=cmd_selftest)

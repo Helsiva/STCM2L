@@ -763,6 +763,80 @@ def _index(script: Script) -> None:
 # Builder (recalculo de ponteiros)
 # ---------------------------------------------------------------------------
 
+@dataclass
+class SlotVerdict:
+    """Veredito sobre um slot (opcode, parametro, word): ponteiro ou acaso?"""
+    opcode: int
+    pi: int
+    wi: int
+    instancias: int = 0
+    candidatas: int = 0     # valor 4-alinhado dentro da faixa de enderecos
+    acertos: int = 0        # valor que cai EXATAMENTE num endereco conhecido
+    densidade: float = 0.0  # fracao das posicoes 4-alinhadas que sao endereco
+
+    @property
+    def precisao(self) -> float:
+        """Das que PODERIAM ser ponteiro, quantas realmente acertaram."""
+        return self.acertos / self.candidatas if self.candidatas else 0.0
+
+    @property
+    def veredito(self) -> str:
+        """
+        "ponteiro" - quase toda candidata acerta um endereco. So um ponteiro
+                     faz isso: o valor foi escrito para apontar.
+        "acaso"    - acerta na proporcao da densidade de enderecos, ou seja,
+                     como acertaria um numero qualquer. E imediato do jogo.
+        "duvidoso" - fica no meio, ou tem amostra pequena demais para decidir.
+        """
+        if self.acertos < 3 or self.candidatas < 3:
+            return "duvidoso"
+        if self.precisao >= 0.9:
+            return "ponteiro"
+        if self.precisao <= max(self.densidade * 2.5, 0.5):
+            return "acaso"
+        return "duvidoso"
+
+
+def slot_verdicts(script: Script) -> dict[tuple[int, int, int], SlotVerdict]:
+    """
+    Decide, slot a slot, quais words de parametro sao mesmo ponteiro.
+
+    O teste separa duas coisas que a relocacao sozinha confunde:
+
+    - um **ponteiro** foi escrito para apontar, entao praticamente toda
+      instancia dele cai exatamente sobre um endereco conhecido;
+    - um **imediato** do jogo (numero de flag, alvo de salto, contador) as vezes
+      cai sobre um endereco por acaso - e a frequencia com que isso acontece e
+      justamente a densidade de enderecos entre as posicoes 4-alinhadas do
+      arquivo. Relocar esses e o que corrompe o roteiro sem erro nenhum.
+
+    Por isso a conta nao e "quantas foram relocadas" e sim "das que PODERIAM ser
+    ponteiro, quantas acertaram".
+    """
+    fim = script.source_size or max(
+        (el.offset + el.orig_size for el in script.elements), default=HEADER_SIZE)
+    posicoes = max((fim - HEADER_SIZE) // 4, 1)
+    densidade = min(len(script.addr_map) / posicoes, 1.0)
+
+    out: dict[tuple[int, int, int], SlotVerdict] = {}
+    for el in script.elements:
+        if el.kind != "action":
+            continue
+        for pi, param in enumerate(el.params):
+            for wi in range(3):
+                chave = (el.opcode, pi, wi)
+                v = out.get(chave)
+                if v is None:
+                    v = out[chave] = SlotVerdict(el.opcode, pi, wi, densidade=densidade)
+                v.instancias += 1
+                valor = param[wi]
+                if HEADER_SIZE <= valor < fim and valor % 4 == 0:
+                    v.candidatas += 1
+                    if valor in script.addr_map:
+                        v.acertos += 1
+    return out
+
+
 def build(script: Script, relocate: str = "scan") -> bytes:
     """
     Reserializa o script recalculando todos os offsets.
@@ -773,8 +847,25 @@ def build(script: Script, relocate: str = "scan") -> bytes:
     relocate="strict" : apenas o 1o word de cada parametro, exports e
                         collection_link sao relocados.
     """
-    if relocate not in ("scan", "strict"):
+    if relocate not in ("scan", "strict", "slots"):
         raise BuildError(f"modo de relocacao desconhecido: {relocate}")
+
+    # modo "slots": so reloca o que se provou ponteiro. Um imediato do jogo que
+    # por acaso vale um endereco fica quieto, que e o dano invisivel do "scan".
+    vereditos: dict[tuple[int, int, int], SlotVerdict] = {}
+    tabelas: set[tuple[int, int]] = set()
+    if relocate == "slots":
+        vereditos = slot_verdicts(script)
+        # trecho cru so e relocado quando o bloco inteiro parece tabela de
+        # ponteiros (praticamente todo word cai num endereco conhecido)
+        for ei, el in enumerate(script.elements):
+            for si, seg in enumerate(el.segments):
+                if not isinstance(seg, RawSegment) or len(seg.data) < 8:
+                    continue
+                words = [ru32(seg.data, wo) for wo in range(0, len(seg.data) - 3, 4)]
+                acertos = sum(1 for v in words if v in script.addr_map)
+                if words and acertos / len(words) >= 0.9:
+                    tabelas.add((ei, si))
 
     # 1) novo layout ---------------------------------------------------------
     body = [el for el in script.elements if el.region == "body"]
@@ -818,6 +909,19 @@ def build(script: Script, relocate: str = "scan") -> bytes:
     # 3) aplica relocacao ----------------------------------------------------
     new_link = script.header.collection_link
     for site in script.sites:
+        if relocate == "slots" and site.scope == "element":
+            if site.seg >= 0:
+                if (site.index, site.seg) not in tabelas:
+                    continue
+            else:
+                resto = site.word - ACTION_HEADER_SIZE
+                if resto < 0:
+                    continue
+                chave = (script.elements[site.index].opcode,
+                         resto // PARAM_SIZE, (resto % PARAM_SIZE) // 4)
+                v = vereditos.get(chave)
+                if v is None or v.veredito != "ponteiro":
+                    continue
         if relocate == "strict":
             if site.scope == "element" and site.seg >= 0:
                 continue
