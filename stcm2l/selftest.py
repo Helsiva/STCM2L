@@ -421,6 +421,46 @@ def _check_fit(tmpdir: Path, log) -> bool:
     if erros:
         log(f"     {erros}")
     ok &= kw_ok
+
+    # -- o ponto cego do compare: um imediato do jogo que POR ACASO vale um
+    #    endereco conhecido e relocado junto, e o mapeamento dele bate igual ao
+    #    de um ponteiro legitimo - "relocacao esperada", zero suspeitos. So a
+    #    consistencia por slot denuncia: ponteiro de verdade e relocado em quase
+    #    toda instancia do opcode; coincidencia aparece numa so.
+    cdat = tmpdir / "coincidencia.DAT"
+    # muitas falas para o opcode repetir: a razao do slot so denuncia a
+    # coincidencia se houver instancias suficientes para comparar
+    muitas = [f"\u53f0\u8a5e{i}\u3067\u3059" for i in range(21)]
+    base = parse(make_otome_sample(muitas, pool))
+    acoes = [e for e in base.elements if e.kind == "action" and e.params]
+    # o endereco tem que ser de algo que SE MOVE quando o texto cresce - o pool
+    # da cauda serve; um elemento do inicio do arquivo ficaria parado e o
+    # imediato nem seria reescrito
+    endereco = base.elements[-1].offset
+    vitima = acoes[-1]
+    vitima.params[0][2] = endereco             # imediato que "parece" ponteiro
+    cdat.write_bytes(build(base))
+
+    cscript = parse(cdat.read_bytes())
+    centries = collect_entries(cscript, "cp932")
+    for e in centries:
+        if classify_text(e.original) != "id":
+            e.translation = f"Traducao {e.id} bem maior que o original japones."
+    ctexts = tmpdir / "coincidencia.json"
+    dump_entries(centries, ctexts, cdat.name, "cp932", "json")
+    cout = tmpdir / "out" / "coincidencia.DAT"
+    inject_file(cdat, ctexts, cout, out_encoding="utf-8")
+
+    rel4 = compare(cdat, cout)
+    pego = [t for t in rel4.isolados if t.wi == 2]
+    coin_ok = bool(pego) and not rel4.suspects
+    log(f"[36] compare denuncia o imediato coincidente: {len(rel4.suspects)} suspeitos "
+        f"(o mapeamento dele bate), {len(rel4.isolados)} slot(s) isolado(s) "
+        f"({'OK' if coin_ok else 'FALHOU'})")
+    for t in rel4.isolados[:3]:
+        log(f"     opcode 0x{t.opcode:X} param {t.pi} word {t.wi}: "
+            f"{t.relocados}/{t.instancias} ({t.razao:.0%})")
+    ok &= coin_ok
     return bool(ok)
 
 

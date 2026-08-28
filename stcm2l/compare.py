@@ -23,6 +23,7 @@ O `compare` lista exatamente essas reescritas, separando:
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -54,6 +55,35 @@ class WordDiff:
     old: int
     new: int
     expected: bool            # bate com a relocacao logica do mesmo alvo
+    pi: int = -1              # indice do parametro (-1 = nao e parametro)
+    wi: int = -1              # word dentro do parametro
+
+
+@dataclass
+class SlotStat:
+    """
+    Quantas vezes um slot (opcode, parametro, word) foi relocado, de quantas
+    instancias ele tem no arquivo.
+
+    Um slot que E ponteiro e relocado em quase toda instancia do opcode. Um
+    imediato do jogo que por acaso valeu um endereco conhecido aparece uma vez
+    em duzentas - e essa e a unica pista de que ele foi reescrito por engano,
+    porque o mapeamento velho->novo dele "bate" igualzinho ao de um ponteiro
+    legitimo.
+    """
+    opcode: int
+    pi: int
+    wi: int
+    relocados: int
+    instancias: int
+
+    @property
+    def razao(self) -> float:
+        return self.relocados / self.instancias if self.instancias else 0.0
+
+
+#: abaixo desta fracao o slot e tratado como coincidencia, nao como ponteiro
+RAZAO_SUSPEITA = 0.25
 
 
 @dataclass
@@ -67,6 +97,7 @@ class CompareReport:
     structural: list[str] = field(default_factory=list)
     texts: list[TextDiff] = field(default_factory=list)
     words: list[WordDiff] = field(default_factory=list)
+    slots: list[SlotStat] = field(default_factory=list)
     encoding: str = "utf-8"
 
     @property
@@ -82,8 +113,14 @@ class CompareReport:
         return [w for w in self.words if w.expected]
 
     @property
+    def isolados(self) -> list[SlotStat]:
+        """Slots relocados raramente - candidatos a imediato reescrito por engano."""
+        return [s for s in self.slots if 0 < s.razao < RAZAO_SUSPEITA]
+
+    @property
     def clean(self) -> bool:
-        return not self.structural and not self.id_changes and not self.suspects
+        return (not self.structural and not self.id_changes
+                and not self.suspects and not self.isolados)
 
 
 def _reloc_map(a: Script, b: Script) -> dict[int, int]:
@@ -162,6 +199,7 @@ def compare(original: Path, patched: Path) -> CompareReport:
                         where=f"param {pi} word {wi}", off=off,
                         old=pa[wi], new=pb[wi],
                         expected=reloc.get(pa[wi]) == pb[wi],
+                        pi=pi, wi=wi,
                     ))
 
         # -- segmentos -------------------------------------------------------
@@ -219,4 +257,22 @@ def compare(original: Path, patched: Path) -> CompareReport:
             old=a.header.collection_link, new=b.header.collection_link,
             expected=reloc.get(a.header.collection_link) == b.header.collection_link,
         ))
+
+    # -- consistencia por slot ------------------------------------------------
+    instancias: Counter[tuple[int, int, int]] = Counter()
+    for el in a.elements:
+        if el.kind != "action":
+            continue
+        for pi in range(len(el.params)):
+            for wi in range(3):
+                instancias[(el.opcode, pi, wi)] += 1
+    relocados: Counter[tuple[int, int, int]] = Counter()
+    for w in rep.words:
+        if w.opcode is not None and w.pi >= 0:
+            relocados[(w.opcode, w.pi, w.wi)] += 1
+    rep.slots = sorted(
+        (SlotStat(op, pi, wi, n, instancias[(op, pi, wi)])
+         for (op, pi, wi), n in relocados.items()),
+        key=lambda s: (s.razao, -s.instancias),
+    )
     return rep

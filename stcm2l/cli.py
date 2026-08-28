@@ -418,6 +418,17 @@ def cmd_compare(args: argparse.Namespace) -> int:
                   f"trilha e o proximo script por esse nome:")
             for t in ids[:args.limit]:
                 print(f"           [{t.elem}:{t.seg}] {t.old!r} -> {t.new!r}")
+        iso = rep.isolados
+        if rep.slots:
+            firmes = [t for t in rep.slots if t.razao >= 0.25]
+            print(f"       slots      {len(rep.slots)} (opcode, parametro, word) relocados: "
+                  f"{len(firmes)} consistentes, {len(iso)} ISOLADOS")
+        if iso:
+            print(f"       ! {len(iso)} SLOT(S) ISOLADO(S) - relocados em pouquissimas "
+                  f"instancias do opcode, cara de imediato do jogo reescrito por engano:")
+            for t in iso[:args.limit]:
+                print(f"           opcode 0x{t.opcode:X} param {t.pi} word {t.wi}: "
+                      f"{t.relocados}/{t.instancias} instancias ({t.razao:.1%})")
         sus = rep.suspects
         if sus:
             print(f"       ! {len(sus)} WORD(S) SUSPEITO(S) - reescritos sem alvo logico "

@@ -227,6 +227,13 @@ O `--fit` é a rede de segurança: se o jogo passou a se perder depois do patch,
 reinjete com ele. Cada fala que não couber sai no relatório com **quantos bytes
 cortar**; encurte a tradução no `.json` e rode de novo até zerar.
 
+Mas `--fit` cobra caro: numa tradução JA→PT-BR típica, boa parte das falas não
+cabe e fica em japonês. **Antes de encurtar centenas de linhas na mão**, injete
+sem `--fit` e passe o `compare`: se ele fechar com `0 SUSPEITOS` e `0 ISOLADOS`,
+a relocação está verificada e o arquivo que cresceu é bom. O `--fit` existe para
+quando o `compare` acusa alguma coisa — ou quando o repack do jogo exige tamanho
+fixo.
+
 #### Identificador nunca é traduzido
 
 O jogo procura voz, trilha e **o próximo script** por nome. Se `NO00_0012` virar
@@ -277,6 +284,26 @@ elemento e separando o que mudou em quatro baldes:
 
 `--show-text` lista também as falas trocadas; `--limit N` controla quantos itens
 aparecem por seção.
+
+#### Slots isolados (o ponto cego dos "0 suspeitos")
+
+Um imediato do jogo — número de flag, alvo de salto — que por acaso valha um
+endereço conhecido é relocado junto, e o mapeamento dele bate **igualzinho** ao de
+um ponteiro legítimo. Ou seja: ele sai como "relocação esperada" e o relatório
+fecha com zero suspeitos, mesmo tendo corrompido o roteiro.
+
+O que denuncia é a consistência: um slot que **é** ponteiro é relocado em quase
+toda instância daquele opcode; uma coincidência aparece numa só.
+
+```
+       slots      12 (opcode, parametro, word) relocados: 11 consistentes, 1 ISOLADOS
+       ! 1 SLOT(S) ISOLADO(S) - relocados em pouquissimas instancias do opcode:
+           opcode 0x4BC param 0 word 2: 1/7 instancias (14%)
+```
+
+Slot isolado não é prova de erro — pode ser um ponteiro que só aparece em certos
+casos. Mas é o lugar certo para olhar antes de aceitar um patch que cresceu, e
+é o único sinal que existe para esse tipo de dano.
 
 ---
 
