@@ -590,17 +590,32 @@ def _check_shorten(tmpdir: Path, log) -> bool:
     idem_ok = display_width(wrap_text(_q, 50)) == display_width(_q)
     piso_ok = (piso_do_lote(["a" * 40] * 9 + ["a" * 160]) == 40   # exclui o outlier
                and piso_do_lote([]) == 0)
+    # ⚠ identificador e curto e numeroso - num script tipico e a MAIORIA das
+    # entradas. Se entrar na populacao do percentil, afunda o piso e aperta o
+    # orcamento de todo mundo.
+    mistura = ([TextEntry(id=f"A{i:05d}_S00", elem=i, seg=0, opcode=None,
+                          encoding="cp932", original="NO00_0012", translation="x")
+                for i in range(90)]
+               + [TextEntry(id=f"B{i:05d}_S00", elem=i, seg=0, opcode=None,
+                            encoding="cp932", original="\u3042" * 30, translation="x")
+                  for i in range(10)])
+    from .textio import originais_de_fala
+    populacao_ok = (len(originais_de_fala(mistura)) == 10
+                    and piso_do_lote(originais_de_fala(mistura)) == 60
+                    # sem o filtro, os 90 identificadores afundariam o piso
+                    and piso_do_lote([e.original for e in mistura]) < 60)
     teto = box_budget(50, 3)
     orc_ok = (entry_budget("\u3048\uff1f", piso=40) == 40             # o piso segura
               and entry_budget("\u3042" * 20, piso=40) == 46        # 40 col +15%
               and entry_budget("\u3042" * 80, piso=40, teto=teto) == teto   # o teto trava
               and entry_budget("", piso=0) == 0                # sem base
               and entry_budget("a" * 40, folga=0.30) >= entry_budget("a" * 40, folga=0.15))
-    e40b = largura_ok and idem_ok and piso_ok and orc_ok
-    log(f"[40b] largura e orcamento (marcador, quebra, piso, teto): "
+    e40b = largura_ok and idem_ok and piso_ok and populacao_ok and orc_ok
+    log(f"[40b] largura e orcamento (marcador, quebra, piso sem identificador, teto): "
         f"{'OK' if e40b else 'FALHOU'}")
     if not e40b:
-        log(f"     largura={largura_ok} idempotente={idem_ok} piso={piso_ok} orc={orc_ok}")
+        log(f"     largura={largura_ok} idempotente={idem_ok} piso={piso_ok} "
+            f"populacao={populacao_ok} orc={orc_ok}")
     ok &= e40b
 
     # -- montagem comum aos testes de escalada --------------------------------

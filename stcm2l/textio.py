@@ -391,6 +391,11 @@ def piso_do_lote(originais: Iterable[str],
 
     O percentil alto, e nao o maximo, para nao deixar uma fala anomala (que no
     jogo talvez ja cortasse) puxar o piso para cima sozinha.
+
+    ⚠ Passe SO texto de fala. Identificador (`NO00_0012`, nome de arquivo) e
+    curto e numeroso - num script tipico ele e a maioria das entradas - e
+    afunda o percentil, apertando o orcamento de todo mundo. `originais_de_fala`
+    faz esse filtro.
     """
     larguras = sorted(display_width(t) for t in originais if t and t.strip())
     if not larguras:
@@ -400,6 +405,13 @@ def piso_do_lote(originais: Iterable[str],
     # existe para excluir
     i = max(0, math.ceil(len(larguras) * percentil / 100) - 1)
     return larguras[min(i, len(larguras) - 1)]
+
+
+def originais_de_fala(entries: Iterable[Any]) -> list[str]:
+    """Os originais que sao FALA - a populacao certa para o percentil do piso."""
+    return [e.original for e in entries
+            if getattr(e, "original", "").strip()
+            and classify_text(e.original) != "id"]
 
 
 def entry_budget(original: str, piso: int = 0, folga: float = FOLGA_DEFAULT,

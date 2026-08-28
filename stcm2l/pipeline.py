@@ -24,7 +24,7 @@ KNOWN_TAGS = (TAG_CODE_START, TAG_CODE_END, TAG_GLOBAL_DATA)
 from .textio import (
     MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, TextEntry, box_budget, box_overflow,
     classify_text, decode_block, detect_encoding, display_width, entry_budget,
-    piso_do_lote,
+    originais_de_fala, piso_do_lote,
     encoding_report,
     detect_newline, dump_entries, encode_text, load_entries, looks_like_text,
     wrap_text,
@@ -306,7 +306,7 @@ def inject_file(dat_path: Path, texts_path: Path, out_path: Path,
     nl = detect_newline(entries, None if newline == "auto" else newline)
     # o orcamento de largura sai do proprio original de cada fala; o piso, do
     # percentil deste arquivo. Ver textio.entry_budget.
-    piso = piso_do_lote(e.original for e in entries)
+    piso = piso_do_lote(originais_de_fala(entries))
     teto = box_budget(max_line, max_lines)
     report = InjectReport(source=dat_path, output=out_path)
     report.src_encoding = src_encoding

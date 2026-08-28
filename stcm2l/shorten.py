@@ -33,7 +33,8 @@ from typing import Callable, Iterable
 from .textio import (
     FOLGA_DEFAULT, MAX_LINE_DEFAULT, MAX_LINES_DEFAULT, PISO_PERCENTIL, TextEntry,
     box_budget, box_overflow, classify_text, detect_newline, display_width,
-    entry_budget, line_count, piso_do_lote, protect_tags, restore_tags,
+    entry_budget, line_count, originais_de_fala, piso_do_lote, protect_tags,
+    restore_tags,
     visible_width, wrap_text,
 )
 from .translate import (
@@ -469,7 +470,7 @@ def candidatas_orcadas(entries: Iterable[TextEntry],
     itens = list(entries)
     nl = detect_newline(itens, None if newline == "auto" else newline)
     teto = box_budget(max_line, max_lines)
-    piso = piso_do_lote((e.original for e in itens), percentil) if usar_original else 0
+    piso = piso_do_lote(originais_de_fala(itens), percentil) if usar_original else 0
 
     out: list[tuple[TextEntry, int]] = []
     for e in itens:
@@ -693,5 +694,5 @@ def piso_e_teto(entries: Iterable[TextEntry], max_line: int = MAX_LINE_DEFAULT,
                 max_lines: int = MAX_LINES_DEFAULT,
                 percentil: int = PISO_PERCENTIL) -> tuple[int, int]:
     """O piso calculado neste lote e o teto da caixa - para o --dry-run exibir."""
-    return (piso_do_lote((e.original for e in entries), percentil),
+    return (piso_do_lote(originais_de_fala(entries), percentil),
             box_budget(max_line, max_lines))
