@@ -395,14 +395,32 @@ def _check_fit(tmpdir: Path, log) -> bool:
         f"{srep.skip_divergente} pulada(s) por divergencia ({'OK' if div_ok else 'FALHOU'})")
     ok &= div_ok
 
-    # e --ignore-mismatch continua permitindo forcar
-    sout2 = tmpdir / "out" / "switch_forcado.DAT"
+    # defesa em camadas: 'trocar' e token unico sem pontuacao, entao o guard de
+    # identificador segura mesmo com --ignore-mismatch. So os DOIS juntos forcam.
+    sout2 = tmpdir / "out" / "switch_meio.DAT"
     inject_file(sdat, stexts, sout2, out_encoding="utf-8", ignore_mismatch=True)
-    forcado = parse(sout2.read_bytes()).elements[alvo_sw.elem].segments[alvo_sw.seg].content
-    forca_ok = forcado == b"mudar"
-    log(f"[34] --ignore-mismatch ainda forca: bloco virou {forcado!r} "
-        f"({'OK' if forca_ok else 'FALHOU'})")
+    meio = parse(sout2.read_bytes()).elements[alvo_sw.elem].segments[alvo_sw.seg].content
+    sout3 = tmpdir / "out" / "switch_forcado.DAT"
+    inject_file(sdat, stexts, sout3, out_encoding="utf-8",
+                ignore_mismatch=True, allow_id_change=True)
+    forcado = parse(sout3.read_bytes()).elements[alvo_sw.elem].segments[alvo_sw.seg].content
+    forca_ok = meio == b"switch" and forcado == b"mudar"
+    log(f"[34] --ignore-mismatch sozinho ainda segura ({meio!r}); com "
+        f"--allow-id-change forca ({forcado!r}) ({'OK' if forca_ok else 'FALHOU'})")
     ok &= forca_ok
+
+    # palavra-chave solta da engine nao pode ir para o tradutor num script ingles
+    casos = {"switch": "id", "flag": "id", "jump": "id", "r": "id",
+             "Yes.": "prose", "Ouch!": "prose", "Hello there": "prose",
+             "bgm_theme_01.at9": "id", "NO00_0012": "id"}
+    erros = {t: classify_text(t) for t, esperado in casos.items()
+             if classify_text(t) != esperado}
+    kw_ok = not erros
+    log(f"[35] palavra-chave solta ('switch', 'flag', 'r') classificada como "
+        f"identificador: {'OK' if kw_ok else 'FALHOU'}")
+    if erros:
+        log(f"     {erros}")
+    ok &= kw_ok
     return bool(ok)
 
 

@@ -226,6 +226,8 @@ def classify_text(text: str) -> str:
     "cjk"   - tem kana/kanji: fala japonesa
     "prose" - texto latino com cara de frase: fala em ingles/portugues
     "id"    - identificador da engine (ID de voz, nome de arquivo, flag, label)
+              e tambem palavra-chave solta: token unico sem espaco e sem
+              pontuacao de fim de frase ('switch', 'flag', 'r')
 
     Serve para nao mandar `NO00_0012` nem `bgm_theme_01.at9` para o tradutor:
     traduzir isso quebra o jogo, que deixa de achar o recurso.
@@ -239,7 +241,15 @@ def classify_text(text: str) -> str:
         return "prose"                    # tem espaco ou pontuacao de frase
     if ASSET_RE.search(core) or "_" in core or any(c.isdigit() for c in core):
         return "id"
-    return "prose"
+    # Daqui para baixo e um token unico, sem espaco nenhum. Num script com fala
+    # em ingles isso quase nunca e dialogo e quase sempre e palavra-chave da
+    # engine: 'switch', 'flag', 'jump', 'end'. Traduzir uma dessas ('switch' ->
+    # 'trocar') faz o jogo perder a palavra e parar de andar, enquanto deixar uma
+    # fala de uma palavra so em ingles e cosmetico - o erro barato e este.
+    # Fala de uma palavra so vem pontuada ('Yes.', 'Ouch!'), e isso a salva.
+    if len(core) > 1 and core[-1] in ".!?\u2026":
+        return "prose"
+    return "id"
 
 
 # ---------------------------------------------------------------------------

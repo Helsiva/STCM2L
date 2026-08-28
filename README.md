@@ -151,8 +151,16 @@ um formato de resposta que o Google muda sem aviso, além de ser lenta; prefira 
 > recurso. Dois filtros, conforme o idioma do script:
 >
 > - `--only-cjk` — script **japonês**: traduz só o que tem kana/kanji.
-> - `--skip-ids` — script **em inglês**: traduz fala em qualquer idioma, mas preserva o que
->   tem cara de identificador. Num script em inglês, `--only-cjk` pularia tudo.
+> - `--skip-ids` — script **em inglês, ou misto**: traduz fala em qualquer idioma, mas
+>   preserva o que tem cara de identificador. Num script em inglês, `--only-cjk` pularia tudo.
+>
+> **Jogo com japonês E inglês no mesmo lote é caso de `--skip-ids`.** O que conta como
+> identificador ali inclui **token único sem espaço e sem pontuação de fim de frase**:
+> `switch`, `flag`, `jump`, `end`, `r`. Num script em inglês essas palavras quase nunca são
+> diálogo e quase sempre são palavra-chave da engine — e traduzir uma delas (`switch` →
+> `trocar`) faz o jogo perder a palavra e parar de andar. Fala de uma palavra só vem
+> pontuada (`Yes.`, `Ouch!`) e continua sendo traduzida; o preço do critério é uma
+> eventual interjeição sem ponto que fica em inglês, que é cosmético.
 >
 > O que for pulado fica com `translation` vazio, e o `inject` preserva o original.
 
