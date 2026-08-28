@@ -400,7 +400,35 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
         delta = rep.size_b - rep.size_a
         marca = " OK " if rep.clean else "!!!!"
-        print(f"\n[{marca}] {path.name}")
+        if args.summary:
+            if not rep.clean:
+                motivos = []
+                if rep.structural:
+                    motivos.append(f"{len(rep.structural)} estrutura")
+                if rep.id_changes:
+                    motivos.append(f"{len(rep.id_changes)} identificador")
+                if rep.suspects:
+                    motivos.append(f"{len(rep.suspects)} suspeito")
+                if rep.isolados:
+                    motivos.append(f"{len(rep.isolados)} slot isolado")
+                print(f"[!!!!] {path.name}: {', '.join(motivos)}")
+        else:
+            print(f"\n[{marca}] {path.name}")
+        if args.summary:
+            if not rep.clean:
+                sujos += 1
+            if rep.structural:
+                com_estrutura += 1
+            if rep.id_changes:
+                com_ids += 1
+            if rep.suspects:
+                com_suspeitos += 1
+            if rep.isolados:
+                com_isolados += 1
+            for t in rep.slots:
+                r, i = agregado.get((t.opcode, t.pi, t.wi), (0, 0))
+                agregado[(t.opcode, t.pi, t.wi)] = (r + t.relocados, i + t.instancias)
+            continue
         print(f"       tamanho    {rep.size_a} -> {rep.size_b} ({delta:+d} bytes)"
               + ("   [layout preservado]" if delta == 0 else ""))
         print(f"       elementos  {rep.elems_a} -> {rep.elems_b}")
@@ -658,6 +686,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=15, help="itens mostrados por secao")
     sp.add_argument("--show-text", action="store_true",
                     help="lista tambem os textos alterados, nao so os identificadores")
+    sp.add_argument("--summary", action="store_true",
+                    help="so o veredito: uma linha por arquivo problematico e o resumo do "
+                         "lote no fim. Para varrer uma arvore inteira sem afogar o terminal.")
     common(sp)
     sp.set_defaults(func=cmd_compare)
 
